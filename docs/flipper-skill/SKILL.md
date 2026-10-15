@@ -15,6 +15,10 @@ Use concise native Flipper UI patterns and reuse firmware widgets, dialogs, file
 
 Put the primary workflow first and About last when present. Group related secondary tools under clear submenus. Implement real steps with actions and integrated outcomes; put save/export at completion rather than in unrelated global menus. Offer file selection where a step needs it, and keep logs reachable while an operation runs. Wrap menu navigation from first to last and last to first. Use appropriate existing firmware status graphics during waiting/scanning; keep necessary status text readable and minimize scrolling in the main workflow.
 
+Use native button bars and directional/OK glyphs for context actions. Hide controls that cannot help the current step; do not leave invisible actions responding to input. Keep Back consistent across nested menus, modal pickers, confirmations, live logs, cancellation, results, and resumed workflows. A live log should return to its running operation; cancellation drains before returning to the operation's caller.
+
+For short success/failure feedback, prefer firmware notifications so mute, vibration and stealth settings remain authoritative. Signal an evidenced result once; retries, passive observations and user cancellation should not imply success. Keep capture readiness, durable saving and completed external operations separate.
+
 Use Dolphin deeds only when an activity has a fitting native deed. Award attempt, actual success, and first save appropriately; avoid XP for passive monitoring, simulated results, browsing, or repeatedly saving the same result.
 
 Every delivered FAP needs a custom launcher icon. Wire the source asset into `application.fam`, check the embedded bytes in the built artifact, and include the source icon with release material.
@@ -31,11 +35,15 @@ Measure sizes with the target ARM build. Host `sizeof`, enum width, allocator be
 
 Budget each operation from actual target types and native allocation behavior. Include simultaneous old/new buffers during growth, parser temporaries, protocol state, thread stacks, queues, strings, and allocator overhead. Stage large operations so mutually exclusive engines and decoded objects do not coexist. A smaller free-heap guard does not prove a larger allocation is safe. Check total free heap and largest contiguous block where the firmware exports both.
 
+When offline tools threaten active-operation RAM, first reclaim lazy detail buffers and mutually exclusive objects. A native embedded plugin can stage genuinely offline code outside radio operation; validate its descriptor, imports, measured load/working budgets and extraction, release all mappings before RF, and keep delivery self-contained. Do not introduce a plugin solely to rearrange code.
+
 Callbacks copy bounded data only. Keep storage, UI work, stop/join, and deallocation on the owning worker. Cancellation must stop new work, drain native operations, then release resources; describe any native call that can delay cancellation.
 
 ## Verify in layers
 
 Run focused host tests, sanitizers where supported, the native ARM build with warnings as errors, SDK import validation, launcher-icon validation, and packaging checks. Inspect renderer captures when UI changed, but label host-rendered frames as simulations.
+
+Review critical subsystems independently when requested or warranted. Give reviewers bounded areas (UI, navigation, radio ownership/evidence, storage, feedback), then run a separate integration pass. Fix actionable findings, rerun affected checks and re-review corrections; stop only when no actionable findings remain, with hardware gaps explicit.
 
 Keep proof tiers separate:
 

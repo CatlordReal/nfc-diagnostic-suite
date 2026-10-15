@@ -4,11 +4,21 @@ App(
     apptype=FlipperAppType.EXTERNAL,
     entry_point="nfc_diagnostic_suite_app",
     stack_size=4096,
-    requires=["gui", "dialogs", "storage", "nfc"],
+    requires=["gui", "dialogs", "storage", "nfc", "notification"],
     fap_category="NFC",
+    flags=["UnloadAssetPacks"],
     fap_icon="nfc_diagnostic_icon.png",
-    fap_version="2.0.1",
+    fap_version="2.0.2",
     fap_author="Kian Conti",
     fap_description="NFC and LF RFID diagnostics with guided native tools",
-    sources=["app.c", "diag_model.c", "diag_nfc.c", "diag_files.c", "diag_ui.c", "diag_lf.c", "diag_reader.c", "diag_workflow.c", "diag_capabilities.c"],
+    sources=["app.c", "diag_model.c", "diag_nfc.c", "diag_files.c", "diag_ui.c", "diag_lf.c", "diag_reader.c", "diag_workflow.c", "diag_capabilities.c", "diag_feedback.c", "diag_tools_loader.c"],
+)
+
+App(
+    appid="nfc_diag_tools",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="diag_tools_plugin_ep",
+    requires=["nfc_diagnostic_suite"],
+    sources=["diag_tools_plugin.c", "diag_insights.c", "diag_systems.c", "diag_systems_ui.c", "diag_files.c"],
+    fal_embedded=True,
 )

@@ -4,9 +4,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 captures = Path(__file__).resolve().parent.parent / 'docs/captures'
-names = ['menu', 'workflow-start', 'card-ready', 'reader-ready', 'busy-0',
-         'card-outcome', 'reader-fields', 'saved-step', 'verify-copy',
-         'saved-menu', 'session-menu', 'reader-menu', 'results', 'log-first', 'log-last']
+names = ['menu', 'workflow-start', 'card-ready', 'reader-ready', 'busy-0', 'busy-lf', 'busy-reader', 'busy-nfc-reader', 'busy-stopping',
+         'card-outcome', 'reader-fields', 'saved-step', 'saved-system-long', 'verify-copy', 'choose-file', 'reread',
+         'nonces-waiting', 'nonces-pair', 'nonces-saved', 'saved-menu', 'session-menu', 'reader-menu', 'results', 'log-first', 'log-last']
 # Explicit names prevent an older capture from silently becoming release proof.
 required = names + [f'log-{index}' for index in range(4)] + [f'busy-{index}' for index in range(16)]
 missing = [name for name in required if not (captures / f'{name}.pbm').is_file()]

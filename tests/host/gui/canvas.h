@@ -11,3 +11,7 @@ void canvas_draw_line(Canvas* canvas, int x1, int y1, int x2, int y2);
 void canvas_draw_box(Canvas* canvas, int x, int y, int width, int height);
 
 int canvas_string_width(Canvas* canvas, const char* text);
+
+size_t canvas_width(const Canvas* canvas);
+size_t canvas_height(const Canvas* canvas);
+void canvas_invert_color(Canvas* canvas);

@@ -8,6 +8,16 @@ extern "C" {
 #endif
 
 typedef struct {
+    bool write;
+    bool emulate;
+    bool full_data;
+} DiagProtocolSupport;
+
+/* Firmware reference data, not evidence that a detected card supports an action.
+   LF needs the exact decoded protocol, so its generic entry returns NULL. */
+const DiagProtocolSupport* diag_protocol_support(DiagProtocol protocol);
+
+typedef struct {
     bool has_identity;
     bool is_nfc;
     bool is_lf;

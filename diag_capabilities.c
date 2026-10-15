@@ -2,14 +2,8 @@
 
 #include <string.h>
 
-typedef struct {
-    bool write;
-    bool emulate;
-    bool full_data;
-} DiagNfcFeatures;
-
 /* Momentum applications/main/nfc/helpers/protocol_support feature tables. */
-static const DiagNfcFeatures diag_nfc_features[DIAG_NFC_PROTOCOL_COUNT] = {
+static const DiagProtocolSupport diag_nfc_features[DIAG_NFC_PROTOCOL_COUNT] = {
     [DiagProtocolIso14443_3a] = {.emulate = true},
     [DiagProtocolIso14443_3b] = {0},
     [DiagProtocolIso14443_4a] = {.emulate = true},
@@ -26,6 +20,10 @@ static const DiagNfcFeatures diag_nfc_features[DIAG_NFC_PROTOCOL_COUNT] = {
     [DiagProtocolType4Tag] = {.write = true, .emulate = true, .full_data = true},
     [DiagProtocolEmv] = {0},
 };
+
+const DiagProtocolSupport* diag_protocol_support(DiagProtocol protocol) {
+    return (unsigned)protocol < DIAG_NFC_PROTOCOL_COUNT ? &diag_nfc_features[protocol] : NULL;
+}
 
 /* Every protocol registered by Momentum's current lfrfid_protocols table has write_data. */
 static const char* const diag_lf_writable_protocols[] = {
@@ -169,7 +167,7 @@ DiagCapabilities diag_capabilities_for(const DiagModel* model) {
 
     DiagProtocol protocol = diag_effective_nfc_protocol(model);
     if((unsigned)protocol >= DIAG_NFC_PROTOCOL_COUNT) return result;
-    const DiagNfcFeatures features = diag_nfc_features[protocol];
+    const DiagProtocolSupport features = diag_nfc_features[protocol];
     result.can_native_write = features.write;
     result.can_magic_write = result.classic;
     result.can_emulate = features.emulate;

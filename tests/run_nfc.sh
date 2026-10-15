@@ -8,6 +8,11 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 compiler=${CC:-cc}
 common_flags="-std=c11 -Wall -Wextra -Werror -pedantic -DDIAG_NFC_TESTING"
 
+if grep -Eq 'nfc_scanner_(alloc|start)|<nfc/nfc_scanner\.h>' "$repo_dir/diag_nfc.c"; then
+    echo "FAIL: live NFC path must not enter native leaf scanner" >&2
+    exit 1
+fi
+
 "$compiler" $common_flags "$repo_dir/diag_model.c" "$repo_dir/diag_nfc.c" \
     "$repo_dir/tests/test_nfc.c" -o "$build_dir/test_nfc"
 "$build_dir/test_nfc"

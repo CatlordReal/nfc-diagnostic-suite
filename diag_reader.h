@@ -62,6 +62,8 @@ void diag_reader_cancel(DiagReader* instance);
 bool diag_reader_is_running(DiagReader* instance);
 void diag_reader_snapshot(
     DiagReader* instance, DiagModel* model, DiagReaderStats* stats);
+/* Configured probe stimulus, never observed card/reader evidence. */
+void diag_reader_stimulus(DiagReader* instance, DiagIsoAIdentity* identity);
 bool diag_reader_read_model(
     DiagReader* instance, DiagModelReadCallback callback, void* context);
 
@@ -89,6 +91,9 @@ typedef struct {
 bool diag_reader_library_info(Storage* storage, DiagNonceLibraryInfo* info, FuriString* explanation);
 
 #ifdef DIAG_READER_TESTING
+bool diag_reader_test_stimulus(
+    DiagReaderMode mode, const DiagIsoAIdentity* source, const uint8_t random_uid[4],
+    DiagIsoAIdentity* result, bool* synthetic);
 typedef struct DiagReaderTest DiagReaderTest;
 typedef enum {
     DiagReaderTestFieldOn,

@@ -1,96 +1,92 @@
-NFC Diagnostic Suite 2.0.1 verification
+NFC Diagnostic Suite 2.0.2 verification
 
 Target: installed Momentum mntm-012, e1784e7418d8b074e971983ceb6fef0f37e52ae4, API 87.1.
-Native FBT compiled all nine C files with warnings as errors against that exact tree.
-APPCHK passed. 225 imports are enabled. Embedded icon matches source PNG.
+Native FBT builds 11 main-app C files and the five-source embedded offline plugin
+with warnings as errors. APPCHK passed. Firmware source checkout remains clean.
+Main FAP: 230 enabled imports, correct API and exact custom icon bytes.
+Embedded FAL: 57 enabled imports, correct API; exact 24,480-byte payload/signature
+matches the native plugin artifact. No separate plugin installation is needed.
 
 Commands (external toolchain reused; firmware source unchanged):
-FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" scripts/test.sh
 FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" scripts/build.sh
+FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" scripts/test.sh
+FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" DIAG_UI_SANITIZE=1 tests/render_ui.sh
 python3 scripts/package.py
 
-diag_model tests passed
-diag_model tests passed
-diag_files tests passed
-diag_nfc evidence tests passed
-diag_nfc evidence tests passed
-diag_nfc evidence tests passed
-diag_lf evidence tests passed
-diag_lf evidence tests passed
-diag_reader callback/evidence tests passed
-diag_reader callback/evidence tests passed
-diag_workflow tests passed
-diag_capabilities tests passed
-UI renderer, virtual log, wrap checks passed; DiagUi host=2176 bytes
-Host checks passed. Physical NFC/LF, reader interaction, SD, USB, handoffs and XP remain hardware acceptance checks.
+Passing host checks: model, files/session validation, NFC evidence (normal and
+short enums), LF evidence, reader callbacks/native pair logic, actual listener
+stimulus preparation through fingerprint codec, workflow/capabilities, Back
+navigation, notification/nonce-completion policy, reader profiles/similarity,
+system names/group limits, native systems persistence fault injection, plugin
+loader failure/cleanup and production C renderer. ASan/UBSan run where supported.
 
-Physical symptom and corrective design:
-The user's read-screen photo showed free heap 26,080 bytes, guard 40,960 bytes,
-largest block 19,952 bytes. This was a pre-allocation rejection, not an active-read crash.
-The old permanent application state duplicated full models and large text/line buffers.
-The revised state uses lazy result and repeat allocations, one live backend model,
-compact reference observations, bounded UI text and virtual full-history log windows.
-Completed radio workers drain before copying final evidence or choosing a file.
+Physical symptom and RAM design:
+The user's read-screen photo showed free heap 26,080 bytes, reserve 40,960 bytes,
+largest block 19,952 bytes: a pre-allocation refusal. Permanent full-model and UI
+buffer duplication has been removed. Results are copied only after radio drain;
+reference/repeat observations are compact, and details allocate lazily outside RF.
 
-Target sizes come from ARM DWARF, not host layouts:
-DiagApp: 3260 bytes
-DiagUi: 2152 bytes
-DiagModel: 6984 bytes
-DiagObservation: 208 bytes
-Five observations: 1040 bytes
-Startup state reduction: 22388 bytes
+Actual target ARM DWARF sizes (not host layouts):
+DiagApp: 1584 bytes (earlier original build 25,648; startup state saves 24,064).
+DiagUi: 368 bytes (2.0.1 was 2,152; inline text now 256 bytes).
+DiagModel: 6984 bytes. DiagObservation: 208 bytes; five observations: 1040 bytes.
+DiagNavigation: 24 bytes. Long details: at most 2049 allocated bytes, freed before RF.
 
-Linked sections (not complete runtime heap use):
-text	   data	    bss	    dec	    hex	filename
-  75456	      0	      0	  75456	  126c0	/Users/kianconti/dev/projects/nfc-diagnostic-suite/.momentum-mntm012/build/f7-firmware-C/.extapps/nfc_diagnostic_suite_d.elf
+Native ELF sections, excluding debug/file size:
+Main text+rodata+ignored ARM exidx: 81,700 bytes; actual mapped code/constants 81,692.
+Offline FAL mapped: 12,732 bytes; fast relocations: 2,211 bytes.
+FAL load guard: 12,732 + 2,211 + 4,096 loader allowance + 12,288 working reserve
+= 31,327 bytes < 32,768; largest-section gate also passes. Artifact checks enforce
+these equations, including NOBITS/alloc sections. FAL mappings close before RF.
+The native UnloadAssetPacks flag can additionally reclaim optional theme packs;
+its savings depend on the device and are not counted as guaranteed headroom.
+Keep the 40 KiB NFC/card and 12 KiB contiguous guards; repeat adds 1,040 bytes.
+Guards and source budgets are not physical measurements of available device RAM.
 
-The earlier state used 25,648 bytes; UI alone used 9,792 bytes.
-Keep the 40 KiB NFC/card reserve and 12 KiB contiguous-block guard; repeat adds
-1,040 bytes. These are source-derived allocation budgets, not measured device headroom.
-Low-memory preflight preserves prior evidence on expected refusal. Native malloc can
-assert under unexpected concurrent heap exhaustion; physical contention is untested.
+All 15 source files were recompiled with target flags, -fstack-usage and
+-Wstack-usage=1536. Largest live own frame: save 1432 bytes; history search 968,
+directory search 904, export_one 824, reader_patterns 688, NFC worker 544.
+Entry frame 424; own save/export chain totals 2776 before native/libc frames.
+History chain totals about 3088 including decode before native/libc frames.
+The app thread is 4096 bytes; physical stack watermark remains unproved.
 
-Host regression coverage includes evidence/provenance, short-enum scanner results,
-legacy/v2 sessions, malformed/untrusted card files, root-mount directory handling,
-non-overwrite publication and storage failures, capability gating, workflow return
-matrix, menu wrap, 10-pixel text pitch and all 64 virtual log entries. Test-only
-simulation helpers are excluded from production; no test/demo UI ships.
+Review loops:
+Independent focused passes covered native UI/lazy buffers, all Back/Log/picker
+callers, retry/band ownership, NFC/LF evidence, reader stimulus/profile context,
+file validation, system/current-state storage, profile trust boundaries, loader
+lifetimes, nonce pair/decode gates, native sound/haptics, Dolphin XP and packaging.
+Findings were fixed and rechecked: stale log breadcrumbs, source-picker evidence
+loss, failed-start allocations, natural Classic completion feedback, 13th-system
+creation, field/random-stimulus codec rejection, exact storage error/path reporting,
+false retained-temp notice, menu selection loss and long group-name clipping.
+A separate final whole-integration reviewer reports no actionable code/UI finding;
+final artifact/package freshness is checked separately before publication.
 
-Independent agents inspected actual changes and tests: UI/virtual logs, model visitors,
-scanner ABI, compact comparison, storage mount behavior/publication/errors, workflow
-resume, source rollback, optional tool fallback, repeat allocation, memory lifetimes,
-Dolphin gates (native weights: attempts 1, successful reads/saves 3,
-Classic reader detection 1), installed skill and installer allowlist. Blocking findings were fixed
-and rechecked. Standard loader deferred-launch queue capacity remains firmware-owned.
+Live discovery deliberately avoids mntm-012's broad leaf scanner because its EMV
+PPSE parser lacks RF TLV bounds. Five native base pollers and direct read-only
+family probes retain the 15-protocol evidence model. SLIX remains a UID hint.
+Inherited native ISO-A malformed-cascade overflow and native ISO-DEP WTX / Plus
+and DESFire AF-continuation limits remain. Hostile out-of-spec RF hardening needs
+a firmware fix or separately scoped low-level stack; no firmware source was changed.
+Cancellation drains native work and cannot guarantee a hard deadline for those calls.
 
-Target stack instrumentation recompiles all nine sources with actual FBT flags
-plus -fstack-usage -Wstack-usage=1536. Largest individual frames (not call-chain bounds):
-diag_repeatability_analyze: 1072 bytes
-save: 856 bytes
-diag_export_one: 824 bytes
-diag_preflight_rfid_file: 768 bytes
-diag_preflight_nfc_file: 704 bytes
-diag_files_ensure_directory.part.0: 576 bytes
-diag_nfc_worker: 552 bytes
-reader_append_pairs.constprop: 520 bytes
-diag_reader_library_info: 512 bytes
-diag_set_export_paths: 464 bytes
+The final engine model keeps 64 newest log entries and dropped count. Across retry
+and fallback, prior terminal attempt domains/codes are summarized; full prior
+per-protocol history is live/native-log output, not retained across model resets.
 
-Renderer captures run production diag_ui.c with mntm-012 fonts and native assets,
-in a host 128x64 framebuffer with synthetic states. They are not physical screenshots,
-full firmware emulation, or RF proof. Native scanning art/buttons and screenshots
-are inspected before release. UI render runs also pass ASan/UBSan.
+Renderer captures run actual diag_ui.c with mntm-012 fonts, exported status art,
+and exact native elements_button_* implementations in a host 128x64 framebuffer.
+Synthetic states are not physical screenshots or full firmware emulation. Native
+bars, busy/drain animation, 10-pixel pitch, wrap/scroll, long details, low-memory
+fallback, hidden controls, nonce readiness and 24-char group-name tail were checked.
 
-Hardware acceptance pending: no Flipper is connected here. Actual NFC/LF coupling,
-reader exchanges, contention/cancel drain timing, SD/power-loss behavior, optional
-USB log transport, Dolphin XP, tool handoffs, recovery/write results and device RAM
-headroom require physical verification. No universal cloning, reader-brand detection,
-calibrated field measurement or access-system acceptance is claimed.
-
-Two unrelated Momentum manifest warnings (.cli_gui and .f0_mtp) occur before target
-compilation. The suite has no compiler/import error.
+Hardware acceptance pending: RF coupling/detection, contention/drain timing,
+SD/power-loss behavior, optional USB transport, display interaction, speaker/vibro,
+Dolphin XP, tool handoffs, actual recovery/write results and runtime heap/stack.
+No universal card support, reader-brand detection, cloning success, calibrated
+RF measurement or physical reader acceptance is claimed.
 
 Final artifact build record:
 Momentum source: e1784e7418d8b074e971983ceb6fef0f37e52ae4
 Version,+,87.1,,
-fa075a8398bc53ca4b82b4936ea46eb572e753b7f4988c96689c1ea4770d3fee  nfc_diagnostic_suite.fap
+48dfe106926c46d1141984724dc109736e7e1de3953cf0328d3bbae6d40d1658  nfc_diagnostic_suite.fap

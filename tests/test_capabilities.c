@@ -258,7 +258,19 @@ static void test_source_does_not_grant_capabilities_and_bounds(void) {
                capabilities, 0u, true, true, true, NULL, 16u) == 0u);
 }
 
+static void test_reference_support_bounds(void) {
+    for(unsigned i = 0; i < DIAG_NFC_PROTOCOL_COUNT; ++i) assert(diag_protocol_support((DiagProtocol)i));
+    assert(!diag_protocol_support(DiagProtocolLfRfid));
+    assert(!diag_protocol_support((DiagProtocol)-1));
+    assert(!diag_protocol_support((DiagProtocol)255));
+    assert(diag_protocol_support(DiagProtocolMfClassic)->write);
+    assert(diag_protocol_support(DiagProtocolMfClassic)->full_data);
+    assert(!diag_protocol_support(DiagProtocolMfDesfire)->write);
+    assert(!diag_protocol_support(DiagProtocolEmv)->emulate);
+}
+
 int main(void) {
+    test_reference_support_bounds();
     test_unknown_and_field_only();
     test_classic_evidence_gate();
     test_nfc_feature_mappings();

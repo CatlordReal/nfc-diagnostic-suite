@@ -20,6 +20,9 @@
 #include "diag_reader.h"
 #include "diag_workflow.h"
 #include "diag_capabilities.h"
+#include "diag_navigation.h"
+#include "diag_feedback.h"
+#include "diag_tools_loader.h"
 
 #define REPORT_DIR EXT_PATH("apps_data/nfc_diagnostic_suite")
 
@@ -35,6 +38,7 @@ typedef struct {
     Gui* gui;
     Storage* storage;
     DialogsApp* dialogs;
+    NotificationApp* notification;
     DiagNfc* nfc;
     DiagLf* lf;
     DiagReader* reader;
@@ -43,8 +47,10 @@ typedef struct {
     DiagWorkflowBand last_card_band;
     DiagMenu menu;
     size_t menu_positions[7];
+    DiagNavigation navigation;
     DiagStep step;
     bool pending_file;
+    bool back_after_drain;
     bool file_from_workflow;
     bool showing_reference;
     DiagWorkflow workflow;
@@ -58,15 +64,21 @@ typedef struct {
     bool workflow_radio;
     bool current_for_workflow;
     bool workflow_save_failed;
-    const char* workflow_labels[16];
-    unsigned workflow_actions[16];
+    const char* workflow_labels[19];
+    unsigned workflow_actions[19];
     size_t workflow_action_count;
     const char* reader_labels[6];
     unsigned reader_actions[6];
     DiagReaderStats reader_stats;
     DiagLfStats lf_stats;
+    DiagIsoAIdentity reader_stimulus;
+    char system[DIAG_SYSTEM_NAME_CAPACITY];
     bool reader_from_workflow;
     bool auto_band;
+    bool skip_to_lf;
+    bool retry_used;
+    bool nonce_ready_notified;
+    bool finish_capture;
     char fallback_detail[DIAG_LOG_MESSAGE_CAPACITY];
     bool cancelled;
     bool leave;
@@ -90,9 +102,10 @@ typedef struct {
     FuriString* message;
 } DiagApp;
 
-_Static_assert(sizeof(DiagApp) < 6144u, "App state exceeds startup RAM budget");
+_Static_assert(sizeof(DiagApp) < 2048u, "App state exceeds startup RAM budget");
 
 static void ui_show(DiagApp* app, const char* title, const char* text, bool preserve) {
+    diag_navigation_present_text(&app->navigation);
     furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
     app->ui.scanning = app->active;
     diag_ui_text(&app->ui, title, text, preserve);
@@ -145,7 +158,9 @@ static void uid_text(FuriString* text, const uint8_t* uid, size_t count) {
 static bool workflow_restore_source(DiagApp* app);
 static void show_menu(DiagApp* app, DiagMenu menu);
 static void workflow_page(DiagApp* app);
+static void render_navigation_page(DiagApp* app);
 static bool visit_radio(DiagApp* app, DiagModelReadCallback callback, void* context);
+static bool native_tool_available(DiagApp* app, const char* path);
 static void reader_report(DiagApp* app);
 static void lf_report(DiagApp* app);
 static void results(DiagApp* app) {
@@ -206,6 +221,8 @@ static void log_preview(const DiagModel* model, void* context) {
     furi_mutex_release(app->ui_mutex);
 }
 static void logs(DiagApp* app, bool preserve) {
+    if(!preserve)
+        diag_navigation_enter(&app->navigation, app->active ? DiagNavActiveLog : DiagNavText);
     if(app->active) { visit_radio(app, log_preview, app); return; }
     if(!app->has_current || !app->current) { ui_show(app, "Event log", "No session recorded.", false); return; }
     furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
@@ -234,15 +251,30 @@ static size_t stream_logs(DiagApp* app) {
         FURI_LOG_I("NfcDiag", "%lu ms %s", (unsigned long)batch.entries[i].elapsed_ms, batch.entries[i].message);
     return batch.count;
 }
+static bool scan_file_available(const DiagApp* app) {
+    return app->workflow_radio && app->workflow.have_card && !app->repeat && !app->cancelled &&
+        (app->radio == RadioNfc || app->radio == RadioLfCard);
+}
+static bool can_skip_nfc(const DiagApp* app) {
+    return app->active && !app->repeat && !app->cancelled &&
+        ((app->workflow_radio && app->workflow.have_card && app->radio == RadioNfc) ||
+         (app->radio == RadioReader && app->reader_stats.mode != DiagReaderModeClassic));
+}
 static void live_preview(const DiagModel* model, void* context) {
     DiagApp* app = context;
     if(furi_mutex_acquire(app->ui_mutex, 0) != FuriStatusOk) return;
     if(app->ui.log_view) diag_ui_logs(&app->ui, model, true, app->log_follow);
-    else {
+    else if(app->radio == RadioReader && app->reader_stats.mode == DiagReaderModeClassic) {
         char body[96];
-        const char* band = app->radio == RadioNfc ? "NFC" : app->radio == RadioLfCard ? "125 kHz RFID" : "Reader";
+        diag_nonce_readiness_text(&app->reader_stats, true, body, sizeof(body));
+        diag_ui_step(&app->ui, app->cancelled ? "Saving pairs" : "Reader nonces", body,
+            DiagUiArtNone, "", app->cancelled ? "" : "Done", "Log");
+    } else {
+        char body[96];
+        const char* band = app->radio == RadioNfc ? "NFC" : app->radio == RadioLfCard ? "125 kHz RFID" : app->radio == RadioReader ? "NFC reader" : "Reader fields";
         snprintf(body, sizeof(body), "%s\n%.28s", band, diag_stage_name(model->last_successful_stage));
-        diag_ui_step(&app->ui, app->cancelled ? "Stopping" : "Reading", body, DiagUiArtScanning, "File", "", "Log");
+        diag_ui_step(&app->ui, app->cancelled ? "Stopping" : app->retry_used ? "Retrying" : "Reading", body, DiagUiArtScanning,
+            scan_file_available(app) ? "File" : "", can_skip_nfc(app) ? "RFID" : "", "Log");
     }
     app->ui.scanning = true;
     app->ui.animation_frame++;
@@ -251,20 +283,91 @@ static void live_preview(const DiagModel* model, void* context) {
 }
 static void diagnose(DiagApp* app) {
     if(!app->has_current) {
-        ui_show(app, "Diagnose", "No session.\nChoose Identify card.", false);
+        ui_show(app, "Diagnose", "Read a card or test\na reader first.", false);
         return;
     }
-    furi_string_printf(app->text, "Last successful stage:\n%s\n", diag_stage_name(app->current->last_successful_stage));
+    furi_string_printf(app->text, "Last stage: %s\n", diag_stage_name(app->current->last_successful_stage));
     if(app->current->error.present) furi_string_cat_printf(app->text, "Error: %s\nCode: %ld\n",
         app->current->error.domain, (long)app->current->error.code);
-    furi_string_cat_printf(app->text, "\n%s\n\nLikely causes only;\nnot measurements.\nNo RSSI, range,\nantenna tuning or\nRF waveform API.",
-                           diag_stage_advice(app->current->last_successful_stage));
-    ui_show(app, "Diagnose", furi_string_get_cstr(app->text), false);
+    DiagTools* tools = diag_tools_open(app->storage, app->message);
+    if(tools) {
+        DiagInsightRecommendation advice;
+        if(diag_tools_api(tools)->recommend(app->current,
+            app->last_radio == RadioReader ? &app->reader_stats : NULL,
+            app->last_radio == RadioLfReader || app->last_radio == RadioLfCard ? &app->lf_stats : NULL, &advice))
+            furi_string_cat_printf(app->text, "\n%s\nNext: %s\n", advice.cause, advice.next_test);
+        diag_tools_close(tools);
+    } else furi_string_cat_printf(app->text, "\n%s\n", furi_string_get_cstr(app->message));
+    furi_string_cat_printf(app->text, "\n%s\nLikely causes only.", diag_stage_advice(app->current->last_successful_stage));
+    ui_show(app, "Why / next test", furi_string_get_cstr(app->text), false);
+}
+static bool reader_profile(DiagApp* app, const DiagToolsApi* api, DiagReaderFingerprint* profile) {
+    if(!app->has_current || !app->current || app->current->provenance != DiagProvenanceLive) return false;
+    if(app->last_radio == RadioReader)
+        return api->from_reader(&app->reader_stats, app->reader_stimulus.present ? &app->reader_stimulus : NULL, profile);
+    if(app->last_radio == RadioLfReader) return api->from_fields(&app->lf_stats, profile);
+    return false;
+}
+static void reader_patterns(DiagApp* app) {
+    DiagTools* tools = diag_tools_open(app->storage, app->message);
+    if(!tools) { ui_show(app, "Reader patterns", furi_string_get_cstr(app->message), false); return; }
+    const DiagToolsApi* api = diag_tools_api(tools);
+    DiagReaderFingerprint profile;
+    DiagSystemMatches matches;
+    if(!reader_profile(app, api, &profile)) furi_string_set(app->text, "Test a reader first.");
+    else if(api->find_similar(app->storage, &profile, &matches, app->message) != DiagFileStatusOk)
+        furi_string_set(app->text, app->message);
+    else {
+        furi_string_printf(app->text, "Similar observations: %u\nIdentity not proven.\n", (unsigned)matches.count);
+        for(size_t i = 0; i < matches.count; ++i)
+            furi_string_cat_printf(app->text, "\n%s / %u%%\n%s\n%s\n",
+                matches.matches[i].group[0] ? matches.matches[i].group : "Ungrouped", matches.matches[i].score,
+                matches.matches[i].session_stem, matches.matches[i].reason);
+        furi_string_cat_printf(app->text, "\nRead: %u  Invalid: %u\nToo little evidence: %u\nOther context: %u\n%s\nSame setup required.\nNo brand identification.",
+            matches.files_decoded, matches.invalid_files, matches.insufficient_files, matches.not_comparable_files,
+            matches.truncated ? "Search limit reached." : "Search complete.");
+    }
+    diag_tools_close(tools);
+    ui_show(app, "Reader patterns", furi_string_get_cstr(app->text), false);
+}
+static void drain_inputs(DiagApp* app) {
+    InputEvent event;
+    while(furi_message_queue_get(app->inputs, &event, 0) == FuriStatusOk) {}
+}
+static void choose_system(DiagApp* app) {
+    DiagTools* tools = diag_tools_open(app->storage, app->message);
+    if(!tools) { ui_show(app, "Systems", furi_string_get_cstr(app->message), false); return; }
+    view_port_enabled_set(app->viewport, false);
+    drain_inputs(app);
+    bool chosen = diag_tools_api(tools)->choose(app->storage, app->gui, app->system, app->message);
+    drain_inputs(app);
+    view_port_enabled_set(app->viewport, true);
+    diag_tools_close(tools);
+    if(!chosen) {
+        if(furi_string_size(app->message)) ui_show(app, "Systems", furi_string_get_cstr(app->message), false);
+        return;
+    }
+    {
+        furi_string_printf(app->text, "Current: %s\nNew reports save here.\nCards, reader observations\nand logs share this group.",
+            app->system[0] ? app->system : "Ungrouped");
+        ui_show(app, "System selected", furi_string_get_cstr(app->text), false);
+    }
+}
+static void capabilities_page(DiagApp* app) {
+    DiagCapabilities caps = diag_capabilities_for(app->has_current ? app->current : NULL);
+    furi_string_printf(app->text, "Diagnostics: read-only\nNative saved-data actions\nEmulate: %s\nWrite: %s\nMagic target: %s\n\n%s\n\nA saved source and\ncompatible target may\nbe required. Availability\nis not card confirmation.",
+        caps.can_emulate ? "supported" : "unavailable",
+        caps.can_native_write ? "supported" : "unavailable", caps.can_magic_write ? "supported" : "unavailable", caps.limitation);
+    ui_show(app, "Capabilities", furi_string_get_cstr(app->text), false);
 }
 static void reference(DiagApp* app) {
     const DiagProtocolReference* entry = diag_protocol_reference(app->reference);
     furi_string_printf(app->text, "%s\n%s\n%s\n\n%s\n\nLeft/Right: protocol",
         entry->name, entry->family, entry->standard, entry->diagnostic_note);
+    const DiagProtocolSupport* support = diag_protocol_support(entry->protocol);
+    if(support) furi_string_cat_printf(app->text, "\n\nNative saved-data support:\nEmulate: %s\nWrite: %s\nFull dump needed: %s\nCompatible target and\ncomplete source required.",
+        support->emulate ? "supported" : "unavailable", support->write ? "supported" : "unavailable", support->full_data ? "yes" : "operation dependent");
+    else furi_string_cat_str(app->text, "\n\nLF operations depend on\nexact decoded protocol\nand compatible target.");
     app->showing_reference = true;
     ui_show(app, "Protocol reference", furi_string_get_cstr(app->text), false);
 }
@@ -275,10 +378,17 @@ static void save(DiagApp* app) {
     }
     char stamp[32];
     DiagFilesExportResult exported;
+    char directory[DIAG_FILES_PATH_CAPACITY];
+    DiagTools* tools = diag_tools_open(app->storage, app->message);
+    if(!tools) { ui_show(app, "Save", furi_string_get_cstr(app->message), false); return; }
+    bool resolved = diag_tools_api(tools)->resolve_directory(app->system, directory);
+    diag_tools_close(tools);
+    if(!resolved) { ui_show(app, "Save", "Invalid system name.", false); return; }
     timestamp(stamp, sizeof(stamp), true);
-    DiagFileStatus status = diag_files_export_reports(app->storage, REPORT_DIR, stamp, app->current,
+    DiagFileStatus status = diag_files_export_reports(app->storage, directory, stamp, app->current,
         &exported, app->message);
     if(status != DiagFileStatusOk) {
+        diag_feedback_failure(app->notification);
         ui_show(app, "Export failed", furi_string_get_cstr(app->message), false);
         return;
     }
@@ -291,16 +401,44 @@ static void save(DiagApp* app) {
     }
     if(status != DiagFileStatusOk) {
         furi_string_printf(app->text, "JSON: %s\nCSV: %s\nSession failed: %s", exported.json_path, exported.csv_path, furi_string_get_cstr(app->message));
+        diag_feedback_failure(app->notification);
         ui_show(app, "Partial save", furi_string_get_cstr(app->text), false);
-    } else { app->step = StepSaved; workflow_page(app); }
+    } else {
+        if(app->last_radio == RadioReader || app->last_radio == RadioLfReader) {
+            tools = diag_tools_open(app->storage, app->message);
+            DiagReaderFingerprint profile;
+            char profile_path[DIAG_FILES_PATH_CAPACITY];
+            bool saved = tools && reader_profile(app, diag_tools_api(tools), &profile) &&
+                diag_tools_api(tools)->save_reader_profile(app->storage, directory, exported.session_path,
+                    &profile, profile_path, app->message) == DiagFileStatusOk;
+            if(tools) diag_tools_close(tools);
+            if(!saved) {
+                furi_string_printf(app->text, "Reports/session saved:\n%s\nReader profile failed:\n%s",
+                    exported.session_path, furi_string_get_cstr(app->message));
+                diag_feedback_failure(app->notification);
+                ui_show(app, "Partial save", furi_string_get_cstr(app->text), false);
+                return;
+            }
+        }
+        diag_feedback_success(app->notification); app->step = StepSaved; workflow_page(app);
+    }
 
 }
 static void browse(DiagApp* app, unsigned kind) {
     bool nfc_file = kind == 1, lf_file = kind == 2;
-    FuriString* path = furi_string_alloc_set(nfc_file ? EXT_PATH("nfc") : lf_file ? EXT_PATH("lfrfid") : REPORT_DIR);
+    char directory[DIAG_FILES_PATH_CAPACITY];
+    if(!nfc_file && !lf_file) {
+        DiagTools* tools = diag_tools_open(app->storage, app->message);
+        if(!tools) { ui_show(app, "Open session", furi_string_get_cstr(app->message), false); return; }
+        bool resolved = diag_tools_api(tools)->resolve_directory(app->system, directory);
+        diag_tools_close(tools);
+        if(!resolved) return;
+    }
+    const char* base = nfc_file ? EXT_PATH("nfc") : lf_file ? EXT_PATH("lfrfid") : directory;
+    FuriString* path = furi_string_alloc_set(base);
     DialogsFileBrowserOptions options;
     dialog_file_browser_set_basic_options(&options, nfc_file ? ".nfc" : lf_file ? ".rfid" : ".nds", NULL);
-    options.base_path = nfc_file ? EXT_PATH("nfc") : lf_file ? EXT_PATH("lfrfid") : REPORT_DIR;
+    options.base_path = base;
     view_port_enabled_set(app->viewport, false);
     bool chosen = dialog_file_browser_show(app->dialogs, path, path, &options);
     view_port_enabled_set(app->viewport, true);
@@ -410,6 +548,11 @@ static bool persist_workflow(DiagApp* app, bool show_error) {
     return saved;
 }
 static bool radio_memory(DiagApp* app, bool card_reader, bool repeat, bool reclaim) {
+    if(reclaim) {
+        furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
+        diag_ui_prepare_radio(&app->ui);
+        furi_mutex_release(app->ui_mutex);
+    }
     /* Reserve includes one engine/model, stacks, native data and RX buffers. */
     size_t needed = (card_reader ? 40u * 1024u : 24u * 1024u) + (repeat ? DIAG_REPEATABILITY_RUNS * sizeof(DiagObservation) : 0);
     size_t available = memmgr_get_free_heap() + (reclaim && app->current ? sizeof(DiagModel) : 0) +
@@ -428,9 +571,17 @@ static bool allocate_observations(DiagApp* app, bool repeat) {
     ui_show(app, "Repeat unavailable", "Insufficient RAM.\nRadio not started.", false);
     return false;
 }
+static void begin_activity(DiagApp* app) {
+    diag_navigation_start_activity(&app->navigation);
+    furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
+    app->ui.log_view = false;
+    furi_mutex_release(app->ui_mutex);
+}
 static void start(DiagApp* app, bool repeat) {
     release_radio(app);
     app->active = false;
+    app->pending_file = false;
+    app->back_after_drain = false;
     if(!radio_memory(app, true, repeat, true)) return;
     release_radio(app);
     app->active = false;
@@ -444,6 +595,10 @@ static void start(DiagApp* app, bool repeat) {
     app->nfc = diag_nfc_alloc();
     app->radio = RadioNfc;
     app->auto_band = false;
+    app->skip_to_lf = false;
+    app->retry_used = false;
+    app->nonce_ready_notified = false;
+    app->finish_capture = false;
     app->fallback_detail[0] = 0;
     app->cancelled = false;
     app->repeat = repeat;
@@ -456,9 +611,10 @@ static void start(DiagApp* app, bool repeat) {
     app->active = diag_nfc_start(app->nfc);
     app->has_current = false;
     if(app->active) {
+        begin_activity(app);
         dolphin_deed(DolphinDeedNfcRead);
         visit_radio(app, live_preview, app);
-    } else ui_show(app, "Busy", "NFC worker draining.\nTry after it stops.", false);
+    } else { release_radio(app); ui_show(app, "Busy", "NFC worker unavailable.\nTry again.", false); }
 }
 static DiagCapabilities workflow_capabilities(DiagApp* app) {
     if(app->source_valid) return app->source_caps;
@@ -468,39 +624,49 @@ static DiagCapabilities workflow_capabilities(DiagApp* app) {
        (app->workflow.band == DiagWorkflowBandLf && caps.is_lf)) return caps;
     return diag_capabilities_for(NULL);
 }
-static void workflow_page(DiagApp* app) {
+static void render_workflow_page(DiagApp* app) {
     app->menu = MenuWorkflow;
     app->confirm_action = 0;
     app->showing_reference = false;
     const char* title = app->workflow.have_card ? "Read card" : "Test reader";
     char body[192] = {0};
+    const char* left = "";
     const char* center = "Read";
     const char* right = "Tools";
     DiagUiArt art = app->workflow.have_card ? DiagUiArtCard : DiagUiArtReader;
-    if(app->step == StepCardReady) snprintf(body, sizeof(body), "Hold card nearby.\nNFC / LF auto");
+    if(app->step == StepCardReady) {
+        left = "File";
+        snprintf(body, sizeof(body), "Hold card nearby.\nNFC / LF auto");
+    }
     else if(app->step == StepReaderReady) {
         snprintf(body, sizeof(body), "Hold near reader.\nNFC / LF fields"); center = "Scan";
     } else if(app->step == StepChooseFile) {
         snprintf(body, sizeof(body), "Select saved card\nto continue."); center = "File";
     } else if(app->step == StepVerifyCopy) {
         title = "Check saved copy";
-        snprintf(body, sizeof(body), "Read blank to a\nNEW file, then\ncompare here."); center = "Compare";
+        snprintf(body, sizeof(body), "Read blank to a\nNEW file, then\ncompare here."); center = "Check";
     } else if(app->step == StepReread) {
-        title = "Re-read original";
+        title = "Re-read original"; left = "File";
         snprintf(body, sizeof(body), "Read original\nwith recovered\nkeys; save file."); center = "Read";
     } else if(app->step == StepSaved) {
         title = "Report saved"; center = "Done"; art = DiagUiArtSuccess;
-        snprintf(body, sizeof(body), "Report files\nsaved on SD");
+        snprintf(body, sizeof(body), "%.24s", app->system[0] ? app->system : "Ungrouped");
     } else if(app->last_radio == RadioLfReader) {
         title = "Reader fields"; center = "Save"; right = "Tests"; art = DiagUiArtNone;
         snprintf(body, sizeof(body), "NFC: %s  LF: %s\nField observation\n%s", app->lf_stats.nfc_field_seen ? "yes" : "no",
             app->lf_stats.field_seen ? "yes" : "no", app->current && app->current->error.present ? "Error; see Tests" : "Type not identified");
+    } else if(app->last_radio == RadioReader && app->reader_stats.mode == DiagReaderModeClassic) {
+        title = "Reader nonces"; art = DiagUiArtNone;
+        diag_nonce_readiness_text(&app->reader_stats, false, body, sizeof(body));
+        center = diag_nonce_decode_ready(&app->reader_stats) &&
+            native_tool_available(app, EXT_PATH("apps/NFC/mfkey.fap")) ? "Decode" : "Save";
     } else if(app->last_radio == RadioReader) {
         title = "Reader observation"; art = DiagUiArtNone;
         snprintf(body, sizeof(body), "Selected: %lu\nRequests: %lu\nPairs saved: %lu", (unsigned long)app->reader_stats.selection_count,
             (unsigned long)app->reader_stats.request_count, (unsigned long)app->reader_stats.pairs_saved);
         center = "Save";
     } else if(app->has_current && app->current) {
+        if(app->workflow.have_card) left = "File";
         title = app->current->run_succeeded ? "Card inspected" : "Read incomplete";
         art = DiagUiArtNone;
         center = "Save";
@@ -520,19 +686,34 @@ static void workflow_page(DiagApp* app) {
             app->current->error.present ? app->current->error.domain : "Try repositioning");
     }
     furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
-    diag_ui_step(&app->ui, title, body, art, "File", center, right);
+    diag_ui_step(&app->ui, title, body, art, left, center, right);
     furi_mutex_release(app->ui_mutex);
+}
+static void workflow_page(DiagApp* app) {
+    diag_navigation_enter(&app->navigation, DiagNavWorkflow);
+    render_workflow_page(app);
 }
 static bool native_tool_available(DiagApp* app, const char* path) {
     FileInfo info;
     return storage_common_stat(app->storage, path, &info) == FSE_OK && !(info.flags & FSF_DIRECTORY);
 }
-static void show_menu(DiagApp* app, DiagMenu menu) {
-    app->menu_positions[app->menu] = app->ui.selected;
+static DiagNavPage navigation_page_for_menu(DiagMenu menu) {
+    switch(menu) {
+    case MenuReader: return DiagNavReader;
+    case MenuWorkflowStart: return DiagNavWorkflowStart;
+    case MenuWorkflow: return DiagNavWorkflow;
+    case MenuSaved: return DiagNavSaved;
+    case MenuSessions: return DiagNavSessions;
+    case MenuWorkflowTools: return DiagNavWorkflowTools;
+    case MenuHome:
+    default: return DiagNavHome;
+    }
+}
+static void render_menu(DiagApp* app, DiagMenu menu) {
     app->menu = menu;
     app->confirm_action = 0;
     app->showing_reference = false;
-    if(menu == MenuWorkflow) { workflow_page(app); return; }
+    if(menu == MenuWorkflow) { render_workflow_page(app); return; }
     bool mfkey_available = menu == MenuWorkflowTools && native_tool_available(app, EXT_PATH("apps/NFC/mfkey.fap"));
     bool picopass_available = menu == MenuWorkflowTools && native_tool_available(app, EXT_PATH("apps/NFC/picopass.fap"));
     bool magic_available = menu == MenuWorkflowTools && native_tool_available(app, EXT_PATH("apps/NFC/nfc_magic.fap"));
@@ -554,15 +735,16 @@ static void show_menu(DiagApp* app, DiagMenu menu) {
         diag_ui_menu(&app->ui, "Reader tests", app->reader_labels, count);
     } else if(menu == MenuWorkflowStart) diag_ui_menu(&app->ui, "What do you have?", diag_workflow_start_items, 2);
     else if(menu == MenuSaved) diag_ui_menu(&app->ui, "Saved cards", diag_saved_menu_items, 2);
-    else if(menu == MenuSessions) diag_ui_menu(&app->ui, "Sessions", diag_session_menu_items, 6);
+    else if(menu == MenuSessions) diag_ui_menu(&app->ui, "Sessions", diag_session_menu_items, 8);
     else if(menu == MenuWorkflowTools) {
         unsigned all[16];
         size_t count = diag_capabilities_workflow_actions(workflow_capabilities(app), app->workflow.band,
             app->workflow.have_card, app->source_valid, app->library_pairs_available, all, ITEM_COUNT(all));
         app->workflow_action_count = 0;
         for(size_t i = 0; i < count; ++i) {
-            /* File and Save are already buttons on the workflow page. */
-            if(all[i] == 5 || all[i] == 6 || all[i] == 12) continue;
+            /* Save is a completion action. Source files can still configure reader probes. */
+            if(all[i] == 12 && !(app->last_radio == RadioReader && app->reader_stats.mode == DiagReaderModeClassic)) continue;
+            if((all[i] == 5 || all[i] == 6) && app->workflow.have_card) continue;
             if(all[i] == 8 && !mfkey_available) continue;
             if(all[i] == 14 && !picopass_available) continue;
             if(all[i] == 9) {
@@ -573,15 +755,56 @@ static void show_menu(DiagApp* app, DiagMenu menu) {
             app->workflow_actions[out] = all[i];
             app->workflow_labels[out] = diag_workflow_menu_items[all[i]];
         }
+        if(app->has_current) {
+            size_t out = app->workflow_action_count++;
+            app->workflow_actions[out] = 16; app->workflow_labels[out] = "Capabilities";
+            out = app->workflow_action_count++;
+            app->workflow_actions[out] = 17; app->workflow_labels[out] = "Why / next test";
+        }
+        if(app->last_radio == RadioReader || app->last_radio == RadioLfReader) {
+            size_t out = app->workflow_action_count++;
+            app->workflow_actions[out] = 18; app->workflow_labels[out] = "Reader patterns";
+        }
         diag_ui_menu(&app->ui, "Card actions", app->workflow_labels, app->workflow_action_count);
     } else diag_ui_menu(&app->ui, "NFC Diagnostic Suite", diag_menu_items, DIAG_MENU_COUNT);
     size_t selected = app->menu_positions[menu];
     app->ui.selected = selected < app->ui.menu_count ? selected : app->ui.menu_count - 1;
     furi_mutex_release(app->ui_mutex);
 }
+static void show_menu(DiagApp* app, DiagMenu menu) {
+    if(app->ui.menu) app->menu_positions[app->menu] = app->ui.selected;
+    diag_navigation_enter(&app->navigation, navigation_page_for_menu(menu));
+    render_menu(app, menu);
+}
+static void render_navigation_page(DiagApp* app) {
+    switch(diag_navigation_current(&app->navigation)) {
+    case DiagNavHome: render_menu(app, MenuHome); break;
+    case DiagNavReader: render_menu(app, MenuReader); break;
+    case DiagNavWorkflowStart: render_menu(app, MenuWorkflowStart); break;
+    case DiagNavWorkflow: render_workflow_page(app); break;
+    case DiagNavSaved: render_menu(app, MenuSaved); break;
+    case DiagNavSessions: render_menu(app, MenuSessions); break;
+    case DiagNavWorkflowTools: render_menu(app, MenuWorkflowTools); break;
+    case DiagNavActiveScan:
+        furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
+        app->ui.log_view = false;
+        furi_mutex_release(app->ui_mutex);
+        visit_radio(app, live_preview, app);
+        break;
+    case DiagNavActiveLog:
+        logs(app, true);
+        break;
+    case DiagNavConfirm:
+    case DiagNavText:
+        break;
+    }
+}
 static void snapshot_radio(DiagApp* app) {
     if(app->radio == RadioNfc) diag_nfc_snapshot(app->nfc, app->current);
-    else if(app->radio == RadioReader) diag_reader_snapshot(app->reader, app->current, &app->reader_stats);
+    else if(app->radio == RadioReader) {
+        diag_reader_snapshot(app->reader, app->current, &app->reader_stats);
+        diag_reader_stimulus(app->reader, &app->reader_stimulus);
+    }
     else if(app->radio == RadioLfCard || app->radio == RadioLfReader)
         diag_lf_snapshot(app->lf, app->current, &app->lf_stats);
 }
@@ -599,6 +822,8 @@ static void cancel_radio(DiagApp* app) {
 static void prepare_run(DiagApp* app) {
     release_radio(app);
     app->active = false;
+    app->pending_file = false;
+    app->back_after_drain = false;
     discard_current(app);
     discard_observations(app);
     furi_string_reset(app->text);
@@ -606,6 +831,10 @@ static void prepare_run(DiagApp* app) {
     app->current_for_workflow = false;
     app->repeat = false;
     app->auto_band = false;
+    app->skip_to_lf = false;
+    app->retry_used = false;
+    app->nonce_ready_notified = false;
+    app->finish_capture = false;
     app->fallback_detail[0] = 0;
     app->cancelled = false;
     app->success_xp_given = false;
@@ -627,9 +856,10 @@ static void start_lf(DiagApp* app, DiagLfMode mode, bool repeat) {
     app->active = diag_lf_start(app->lf, mode);
     app->has_current = false;
     if(app->active) {
+        begin_activity(app);
         if(mode == DiagLfModeCard) dolphin_deed(DolphinDeedRfidRead);
         visit_radio(app, live_preview, app);
-    } else ui_show(app, "Start failed", "LF worker unavailable.\nRadio not started.", false);
+    } else { release_radio(app); ui_show(app, "Start failed", "LF worker unavailable.\nRadio not started.", false); }
 }
 static void start_reader(DiagApp* app, DiagReaderMode mode) {
     release_radio(app);
@@ -645,8 +875,12 @@ static void start_reader(DiagApp* app, DiagReaderMode mode) {
     app->radio = RadioReader;
     app->active = diag_reader_start(app->reader, mode, identity.present ? &identity : NULL);
     app->has_current = false;
-    if(app->active) visit_radio(app, live_preview, app);
-    else ui_show(app, "Start failed", "Reader worker busy or\nidentity unsupported.\nNo test started.", false);
+    if(app->active) {
+        diag_reader_snapshot(app->reader, NULL, &app->reader_stats);
+        begin_activity(app);
+        visit_radio(app, live_preview, app);
+    }
+    else { release_radio(app); ui_show(app, "Start failed", "Reader worker busy or\nidentity unsupported.\nNo test started.", false); }
 }
 static void reader_report(DiagApp* app) {
     if(!app->reader_stats_valid) { ui_show(app, "Reader report", "No reader probe yet.", false); return; }
@@ -671,6 +905,7 @@ static void reader_report(DiagApp* app) {
         (unsigned long)s->pairs_saved, (unsigned long)s->pairs_already_saved);
     furi_string_cat_printf(app->text, "Errors: %lu\nLost events: %lu\nStorage error: %ld\n\nNo brand identification.\nNo response may mean\nwrong protocol/UID,\nprotected reader, or\npoor coupling.\nSave + export retains\ncounters in event log.",
         (unsigned long)s->error_count, (unsigned long)s->events_dropped, (long)s->storage_error);
+    if(s->mode == DiagReaderModeClassic) furi_string_cat_printf(app->text, "\n%s", diag_nonce_readiness_detail());
     ui_show(app, "Reader report", furi_string_get_cstr(app->text), false);
 }
 static void lf_report(DiagApp* app) {
@@ -766,7 +1001,6 @@ static bool choose_path(DiagApp* app, bool lf, FuriString* path) {
     return chosen;
 }
 static void workflow_source(DiagApp* app, bool lf) {
-    app->current_for_workflow = false;
     FuriString* path = furi_string_alloc();
     if(choose_path(app, lf, path) && ensure_current(app)) {
         DiagFileStatus status = lf ? diag_files_validate_rfid(app->storage, furi_string_get_cstr(path), app->current, app->message) :
@@ -785,7 +1019,8 @@ static void workflow_source(DiagApp* app, bool lf) {
                 app->source_valid = true;
                 app->current_for_workflow = true;
                 app->step = app->workflow.have_card ? StepOutcome : StepReaderReady;
-                workflow_page(app);
+                diag_navigation_return_to(&app->navigation, DiagNavWorkflow);
+                render_workflow_page(app);
             } else {
                 FuriString* failure = furi_string_alloc_set(app->message);
                 app->has_current = false;
@@ -827,8 +1062,10 @@ static void workflow_verify(DiagApp* app) {
                 if(app->has_current) diag_model_add_log(app->current, DiagLogInfo, app->current->last_successful_stage,
                     comparison.equal ? "Workflow saved-data comparison equal; physical reader acceptance untested" :
                                        "Workflow saved-data comparison different; copy not verified");
+                if(comparison.equal) diag_feedback_success(app->notification);
+                else diag_feedback_failure(app->notification);
                 ui_show(app, "Saved copy check", furi_string_get_cstr(app->text), false);
-            } else ui_show(app, "Verify failed", furi_string_get_cstr(app->message), false);
+            } else { diag_feedback_failure(app->notification); ui_show(app, "Verify failed", furi_string_get_cstr(app->message), false); }
         }
     }
     furi_string_free(copy);
@@ -863,6 +1100,7 @@ static void handoff_prepare(DiagApp* app, DiagWorkflowAction action) {
         }
     }
     app->confirm_action = action;
+    diag_navigation_enter(&app->navigation, DiagNavConfirm);
     const char* body = action == DiagWorkflowActionReadNfc || action == DiagWorkflowActionReadLf ?
         "Read and save card.\nReturn here; select File." : action == DiagWorkflowActionMfkey ?
         "Decode shared nonce log.\nThen re-read original." : action == DiagWorkflowActionPicopass ?
@@ -921,7 +1159,7 @@ static void select_home(DiagApp* app, size_t selected) {
     if(selected == 0) show_menu(app, MenuWorkflowStart);
     else if(selected == 1) {
         diag_workflow_init(&app->workflow, false);
-        app->reader_from_workflow = true;
+        app->reader_from_workflow = false;
         app->source_valid = false;
         app->current_for_workflow = false;
         show_menu(app, MenuReader);
@@ -930,7 +1168,7 @@ static void select_home(DiagApp* app, size_t selected) {
     else if(selected == 4) reference(app);
     else {
         const Version* version = version_get();
-        furi_string_printf(app->text, "NFC Diagnostic Suite\n2.0.1 / native C\nMomentum mntm-012\nBuild: %.12s\nRuntime: %s\nCommit: %s\n\nNFC + 125 kHz RFID\nNo RSSI or waveforms.", DIAG_FIRMWARE_BUILD,
+        furi_string_printf(app->text, "NFC Diagnostic Suite\n2.0.2 / native C\nMomentum mntm-012\nBuild: %.12s\nRuntime: %s\nCommit: %s\n\nNFC + 125 kHz RFID\nNo RSSI or waveforms.", DIAG_FIRMWARE_BUILD,
             version_get_version(version), version_get_githash(version));
         ui_show(app, "About", furi_string_get_cstr(app->text), false);
     }
@@ -971,7 +1209,9 @@ static void select_item(DiagApp* app, size_t selected) {
             if(lf) start_lf(app, DiagLfModeCard, true);
             else start(app, true);
         } else if(selected == 4) logs(app, false);
-        else diagnose(app);
+        else if(selected == 5) diagnose(app);
+        else if(selected == 6) choose_system(app);
+        else reader_patterns(app);
         return;
     }
     if(app->menu == MenuReader) {
@@ -1022,13 +1262,16 @@ static void select_item(DiagApp* app, size_t selected) {
     case 13: show_menu(app, MenuWorkflowStart); break;
     case 14: handoff_prepare(app, DiagWorkflowActionPicopass); break;
     case 15: nonce_library(app); break;
+    case 16: capabilities_page(app); break;
+    case 17: diagnose(app); break;
+    case 18: reader_patterns(app); break;
     default: break;
     }
 }
 static void step_action(DiagApp* app, InputKey key) {
     if(key == InputKeyLeft) {
-        if(app->step == StepVerifyCopy) workflow_verify(app);
-        else choose_workflow_file(app);
+        if(!app->ui.left[0]) return;
+        choose_workflow_file(app);
         return;
     }
     if(key == InputKeyRight) {
@@ -1042,7 +1285,13 @@ static void step_action(DiagApp* app, InputKey key) {
     else if(app->step == StepChooseFile) choose_workflow_file(app);
     else if(app->step == StepVerifyCopy) workflow_verify(app);
     else if(app->step == StepReread) handoff_prepare(app, DiagWorkflowActionReadNfc);
-    else if(app->step == StepSaved) show_menu(app, MenuHome);
+    else if(app->step == StepSaved) {
+        diag_navigation_init(&app->navigation, DiagNavHome);
+        render_menu(app, MenuHome);
+    }
+    else if(app->last_radio == RadioReader && app->reader_stats.mode == DiagReaderModeClassic &&
+        diag_nonce_decode_ready(&app->reader_stats) && native_tool_available(app, EXT_PATH("apps/NFC/mfkey.fap")))
+        handoff_prepare(app, DiagWorkflowActionMfkey);
     else save(app);
 }
 
@@ -1067,11 +1316,22 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
     app->gui = furi_record_open(RECORD_GUI);
     app->storage = furi_record_open(RECORD_STORAGE);
     app->dialogs = furi_record_open(RECORD_DIALOGS);
+    app->notification = furi_record_open(RECORD_NOTIFICATION);
+    DiagTools* tools = diag_tools_open(app->storage, app->message);
+    bool system_load_failed = !tools;
+    if(tools) {
+        DiagFileStatus status = diag_tools_api(tools)->current_load(app->storage, app->system, app->message);
+        system_load_failed = status != DiagFileStatusOk && status != DiagFileStatusNotFound;
+        diag_tools_close(tools);
+    }
     app->viewport = view_port_alloc();
-    show_menu(app, MenuHome);
+    diag_navigation_init(&app->navigation, DiagNavHome);
+    render_menu(app, MenuHome);
+    if(system_load_failed) ui_show(app, "System not restored", furi_string_get_cstr(app->message), false);
     if(argument && !strcmp(argument, "resume")) {
         if(diag_workflow_load(app->storage, &app->workflow, app->message) == DiagFileStatusOk) {
-            show_menu(app, MenuWorkflow);
+            diag_navigation_enter(&app->navigation, DiagNavWorkflow);
+            render_workflow_page(app);
             bool restored = workflow_restore_source(app);
             refresh_library(app);
             uint32_t returned = app->workflow.pending_action;
@@ -1091,15 +1351,32 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
         if(furi_message_queue_get(app->inputs, &event, 100) == FuriStatusOk) {
             if(app->active) {
                 if(event.key == InputKeyBack && app->ui.log_view) {
-                    furi_mutex_acquire(app->ui_mutex, FuriWaitForever);
-                    app->ui.log_view = false;
-                    furi_mutex_release(app->ui_mutex);
-                } else if(event.key == InputKeyBack || event.key == InputKeyLeft) {
+                    diag_navigation_back(&app->navigation);
+                    render_navigation_page(app);
+                } else if(event.key == InputKeyBack ||
+                    (event.key == InputKeyLeft && app->ui.step && app->ui.left[0])) {
+                    app->skip_to_lf = false;
+                    app->finish_capture = false;
                     app->pending_file = event.key == InputKeyLeft;
+                    app->back_after_drain = event.key == InputKeyBack;
                     cancel_radio(app);
                     app->cancelled = true;
                     app->auto_band = false;
                     app->repeat = false;
+                } else if(event.key == InputKeyOk && app->ui.step && !app->cancelled &&
+                    app->radio == RadioReader && app->reader_stats.mode == DiagReaderModeClassic) {
+                    app->finish_capture = true;
+                    app->back_after_drain = false;
+                    app->skip_to_lf = false;
+                    app->pending_file = false;
+                    app->cancelled = true;
+                    cancel_radio(app);
+                } else if(event.key == InputKeyOk && app->ui.step && can_skip_nfc(app)) {
+                    app->skip_to_lf = true;
+                    app->pending_file = false;
+                    app->auto_band = false;
+                    app->cancelled = true;
+                    cancel_radio(app);
                 } else if(event.key == InputKeyRight) {
                     app->log_follow = true;
                     logs(app, false);
@@ -1112,17 +1389,15 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
                 }
             } else if(event.key == InputKeyBack) {
                 app->showing_reference = false;
-                if(app->confirm_action) { app->confirm_action = 0; workflow_page(app); }
-                else if(app->ui.menu) {
-                    if(app->menu == MenuHome) quit = true;
-                    else if(app->menu == MenuWorkflowTools || app->menu == MenuReader ||
-                            (app->menu == MenuSaved && app->file_from_workflow)) workflow_page(app);
-                    else show_menu(app, MenuHome);
-                } else if(app->ui.step) show_menu(app, MenuHome);
-                else show_menu(app, app->menu);
+                app->confirm_action = 0;
+                if(diag_navigation_back(&app->navigation)) render_navigation_page(app);
+                else quit = true;
             } else if(app->confirm_action) {
                 if(event.key == InputKeyOk) handoff_execute(app);
-                else if(event.key == InputKeyRight) workflow_page(app);
+                else if(event.key == InputKeyRight) {
+                    app->confirm_action = 0;
+                    if(diag_navigation_back(&app->navigation)) render_navigation_page(app);
+                }
             } else if(app->showing_reference && (event.key == InputKeyLeft || event.key == InputKeyRight)) {
                 app->reference = (app->reference + (event.key == InputKeyLeft ? DIAG_PROTOCOL_COUNT - 1 : 1)) % DIAG_PROTOCOL_COUNT;
                 reference(app);
@@ -1136,13 +1411,26 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
                 if(event.key == InputKeyUp || event.key == InputKeyDown)
                     diag_ui_move(&app->ui, event.key == InputKeyUp ? -1 : 1);
                 furi_mutex_release(app->ui_mutex);
-                if(is_menu && event.key == InputKeyOk) select_item(app, selected);
+                if(is_menu && event.key == InputKeyOk) {
+                    app->menu_positions[app->menu] = selected;
+                    select_item(app, selected);
+                }
                 else if(app->ui.log_view) logs(app, true);
             }
         }
         if(app->active) {
             bool running = radio_running(app);
-            if(running) { stream_logs(app); visit_radio(app, live_preview, app); }
+            if(running) {
+                if(app->radio == RadioReader) {
+                    diag_reader_snapshot(app->reader, NULL, &app->reader_stats);
+                    if(diag_nonce_minimum_met(&app->reader_stats) && !app->nonce_ready_notified) {
+                        app->nonce_ready_notified = true;
+                        diag_feedback_ready(app->notification);
+                    }
+                }
+                stream_logs(app);
+                visit_radio(app, live_preview, app);
+            }
             else if(!ensure_current(app)) {
                 app->active = false;
                 release_radio(app);
@@ -1163,12 +1451,39 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
                         dolphin_deed(DolphinDeedNfcDetectReader);
                     app->success_xp_given = true;
                 }
-                if(app->auto_band && app->radio == RadioNfc && !app->current->identity.present && !app->cancelled) {
+                /* Retry discovery once, then use the other native band decoder.
+                   Skip/cancel never restarts the operation the user left. */
+                if(app->auto_band && app->radio == RadioNfc && !app->current->identity.present &&
+                    !app->cancelled && !app->retry_used) {
+                    app->retry_used = true;
+                    snprintf(app->fallback_detail, sizeof(app->fallback_detail), "1:%s/%ld",
+                        app->current->error.domain, (long)app->current->error.code);
+                    discard_current(app);
+                    app->serial_log_count = 0;
+                    app->active = diag_nfc_start(app->nfc);
+                    if(app->active) continue;
+                    /* A failed restart continues through the retained worker snapshot. */
+                    if(!ensure_current(app)) { release_radio(app); continue; }
+                    snapshot_radio(app);
+                    app->has_current = true;
+                }
+                if((app->radio == RadioNfc && (app->skip_to_lf ||
+                    (app->auto_band && !app->current->identity.present && !app->cancelled))) ||
+                    (app->radio == RadioReader && app->skip_to_lf)) {
+                    const bool reader = app->radio == RadioReader;
                     char previous[DIAG_LOG_MESSAGE_CAPACITY];
-                    snprintf(previous, sizeof(previous), "NFC no identity: stage=%s error=%.24s/%ld; then LF",
-                        diag_stage_name(app->current->last_successful_stage), app->current->error.domain,
-                        (long)app->current->error.code);
-                    start_lf(app, DiagLfModeCard, false);
+                    if(!app->skip_to_lf && app->retry_used && app->fallback_detail[0])
+                        snprintf(previous, sizeof(previous), "%.45s;2:%.31s/%ld;LF", app->fallback_detail,
+                            app->current->error.domain, (long)app->current->error.code);
+                    else snprintf(previous, sizeof(previous), "NFC %s: %s; %s/%ld;LF",
+                        app->skip_to_lf ? "skip" : "no ID", diag_stage_name(app->current->last_successful_stage),
+                        app->current->error.domain, (long)app->current->error.code);
+                    if(reader) {
+                        app->reader_stats_valid = true;
+                        app->reader_success = app->current->run_succeeded;
+                        app->library_pairs_available |= app->reader_stats.pairs_saved || app->reader_stats.pairs_already_saved;
+                    }
+                    start_lf(app, reader ? DiagLfModeReader : DiagLfModeCard, false);
                     snprintf(app->fallback_detail, sizeof(app->fallback_detail), "%s", previous);
                     continue;
                 }
@@ -1197,6 +1512,7 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
                         app->repeat = false;
                         app->last_radio = app->radio;
                         release_radio(app);
+                        diag_navigation_finish_activity(&app->navigation, DiagNavText);
                         if(observed) repeat_results(app);
                         else ui_show(app, "Repeat stopped", "Could not record run.\nLast session retained.", false);
                         discard_observations(app);
@@ -1225,11 +1541,28 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
                         }
                     }
                     append_reader_summary(app);
+                    if((app->radio == RadioNfc || app->radio == RadioLfCard) && !app->cancelled) {
+                        if(app->current->run_succeeded && app->current->identity.present) diag_feedback_success(app->notification);
+                        else diag_feedback_failure(app->notification);
+                    } else if(app->radio == RadioReader) {
+                        DiagFeedbackResult feedback = diag_nonce_completion_feedback(&app->reader_stats, app->finish_capture, app->cancelled);
+                        if(feedback == DiagFeedbackResultSuccess) {
+                            diag_feedback_success(app->notification);
+                            if(!app->success_xp_given) dolphin_deed(DolphinDeedNfcDetectReader);
+                        } else if(feedback == DiagFeedbackResultFailure) diag_feedback_failure(app->notification);
+                    }
                     release_radio(app);
                     discard_observations(app);
-                    app->step = StepOutcome;
-                    workflow_page(app);
-                    if(app->pending_file) { app->pending_file = false; choose_workflow_file(app); }
+                    if(app->back_after_drain) {
+                        app->back_after_drain = false;
+                        app->pending_file = false;
+                        if(diag_navigation_back(&app->navigation)) render_navigation_page(app);
+                    } else {
+                        diag_navigation_finish_activity(&app->navigation, DiagNavWorkflow);
+                        app->step = StepOutcome;
+                        render_workflow_page(app);
+                        if(app->pending_file) { app->pending_file = false; choose_workflow_file(app); }
+                    }
                 }
             }
         }
@@ -1241,6 +1574,8 @@ int32_t nfc_diagnostic_suite_app(void* argument) {
     view_port_enabled_set(app->viewport, false);
     gui_remove_view_port(app->gui, app->viewport);
     view_port_free(app->viewport);
+    diag_ui_free(&app->ui);
+    furi_record_close(RECORD_NOTIFICATION);
     furi_record_close(RECORD_DIALOGS);
     furi_record_close(RECORD_STORAGE);
     furi_record_close(RECORD_GUI);

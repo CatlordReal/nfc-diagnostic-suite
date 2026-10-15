@@ -1,4 +1,5 @@
 #include "../diag_reader.h"
+#include "../diag_insights.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -182,7 +183,32 @@ static void test_native_log_dedup_and_scan(void) {
     }
 }
 
+static void test_native_stimulus_profiles(void) {
+    const uint8_t random_uid[4] = {1, 2, 3, 4};
+    DiagIsoAIdentity identity;
+    bool synthetic;
+    DiagReaderFingerprint profile;
+    uint8_t encoded[DIAG_READER_FINGERPRINT_ENCODED_SIZE];
+    for(unsigned mode = DiagReaderModeField; mode <= DiagReaderModeClassic; ++mode) {
+        assert(diag_reader_test_stimulus((DiagReaderMode)mode, NULL, random_uid, &identity, &synthetic));
+        assert(identity.present == (mode != DiagReaderModeField));
+        assert(synthetic == (mode != DiagReaderModeField));
+        if(identity.present) { assert(identity.uid[0] == 0x08); assert(identity.cascade_count == 1); }
+        DiagReaderStats stats = {.mode = (DiagReaderMode)mode, .synthetic_identity = synthetic, .elapsed_ms = 30000};
+        assert(diag_reader_fingerprint_from_reader(&stats, identity.present ? &identity : NULL, &profile));
+        assert(diag_reader_fingerprint_encode(&profile, encoded, sizeof(encoded)) == sizeof(encoded));
+        assert(diag_reader_fingerprint_decode(encoded, sizeof(encoded), &profile));
+    }
+    DiagIsoAIdentity supplied = {.present = true, .uid_size = 7, .uid = {4, 1, 2, 3, 4, 5, 6}, .cascade_count = 2};
+    assert(diag_reader_test_stimulus(DiagReaderModeClassic, &supplied, NULL, &identity, &synthetic));
+    assert(!synthetic && identity.sak == 0x18 && identity.atqa[0] == 0x42 && identity.cascade_count == 2);
+    assert(!memcmp(identity.uid, supplied.uid, 7));
+    supplied.uid_size = 10;
+    assert(!diag_reader_test_stimulus(DiagReaderModeClassic, &supplied, NULL, &identity, &synthetic));
+}
+
 int main(void) {
+    test_native_stimulus_profiles();
     test_passive_field();
     test_type_a_metadata();
     test_complete_matching_pairs();

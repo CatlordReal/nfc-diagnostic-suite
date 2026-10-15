@@ -6,7 +6,7 @@ import zipfile
 
 root = Path(__file__).resolve().parent.parent
 dist = root / 'dist'
-output = dist / 'nfc-diagnostic-suite-v2.0.1.zip'
+output = dist / 'nfc-diagnostic-suite-v2.0.2.zip'
 artifact = dist / 'nfc_diagnostic_suite.fap'
 build_record = dist / 'BUILD.txt'
 required = [artifact, root / 'README.md', root / 'LICENSE',

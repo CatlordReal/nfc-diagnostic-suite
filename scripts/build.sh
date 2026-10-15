@@ -41,7 +41,8 @@ if [ ! -f "$artifact" ]; then
     exit 1
 fi
 python3 "$project_dir/scripts/check-imports.py" "$firmware_dir" "$artifact" \
-    --icon "$project_dir/nfc_diagnostic_icon.png"
+    --icon "$project_dir/nfc_diagnostic_icon.png" \
+    --embedded-plugin "$artifact_dir/nfc_diag_tools.fal"
 mkdir -p "$project_dir/dist"
 cp "$artifact" "$project_dir/dist/nfc_diagnostic_suite.fap"
 printf 'Momentum source: %s\n' "$revision" > "$project_dir/dist/BUILD.txt"

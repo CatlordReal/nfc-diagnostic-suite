@@ -1,2 +1,2 @@
-a22af1b5bdc46c639bceb88875ab2f33a39b9e102b9a6a0b75d6f3ff8f06a21e  nfc-diagnostic-suite-v2.0.1.zip
-fa075a8398bc53ca4b82b4936ea46eb572e753b7f4988c96689c1ea4770d3fee  nfc_diagnostic_suite.fap
+e82369f5998b7376e6512a4fc9ecee64fbc2a5a3734ba699e310f06f78b9d4c7  nfc-diagnostic-suite-v2.0.2.zip
+48dfe106926c46d1141984724dc109736e7e1de3953cf0328d3bbae6d40d1658  nfc_diagnostic_suite.fap

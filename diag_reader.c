@@ -8,6 +8,37 @@
 #define READER_LINE_CAPACITY 192u
 #define READER_LOG_LIMIT (1024u * 1024u)
 
+/* Probe configuration stays separate from observed card evidence. Shared with
+   host regression tests so fingerprint context matches the actual listener. */
+static bool reader_configure_stimulus(
+    DiagReaderMode mode, const DiagIsoAIdentity* source, const uint8_t random_uid[4],
+    DiagIsoAIdentity* result, bool* synthetic) {
+    if(!result || !synthetic || (unsigned)mode > DiagReaderModeClassic) return false;
+    if(source && (!source->present ||
+       (source->uid_size != 4u && source->uid_size != 7u && source->uid_size != 10u) ||
+       (mode == DiagReaderModeClassic && source->uid_size == 10u))) return false;
+    memset(result, 0, sizeof(*result));
+    *synthetic = false;
+    if(mode == DiagReaderModeField) return true;
+    if(source) *result = *source;
+    else {
+        if(!random_uid) return false;
+        result->present = true;
+        result->uid_size = 4;
+        memcpy(result->uid, random_uid, 4);
+        result->uid[0] = 0x08;
+        result->atqa[0] = 0x04;
+        *synthetic = true;
+    }
+    result->cascade_count = result->uid_size == 4u ? 1u : result->uid_size == 7u ? 2u : 3u;
+    if(mode == DiagReaderModeClassic) {
+        result->sak = 0x18;
+        result->atqa[0] = result->uid_size == 7u ? 0x42 : 0x02;
+        result->atqa[1] = 0;
+    }
+    return true;
+}
+
 typedef struct {
     uint32_t cuid;
     uint8_t sector;
@@ -385,6 +416,12 @@ static void reader_scan_bytes(ReaderLineScan* scan, const uint8_t* data, size_t 
 }
 
 #ifdef DIAG_READER_TESTING
+bool diag_reader_test_stimulus(
+    DiagReaderMode mode, const DiagIsoAIdentity* source, const uint8_t random_uid[4],
+    DiagIsoAIdentity* result, bool* synthetic) {
+    return reader_configure_stimulus(mode, source, random_uid, result, synthetic);
+}
+
 struct DiagReaderTest { ReaderCore core; };
 DiagReaderTest* diag_reader_test_alloc(DiagReaderMode mode) {
     if(mode > DiagReaderModeClassic) return NULL;
@@ -907,21 +944,10 @@ bool diag_reader_start(DiagReader* instance, DiagReaderMode mode, const DiagIsoA
     while(furi_message_queue_get(instance->queue, &discarded, 0) == FuriStatusOk) {}
     furi_event_flag_clear(instance->events, READER_CANCEL);
     __atomic_store_n(&instance->queue_dropped, 0u, __ATOMIC_RELAXED);
-    memset(&instance->identity, 0, sizeof(instance->identity));
-    if(identity) {
-        instance->identity = *identity;
-    } else {
-        instance->identity.present = true;
-        instance->identity.uid_size = 4;
-        furi_hal_random_fill_buf(instance->identity.uid, 4);
-        instance->identity.uid[0] = 0x08;
-        instance->identity.atqa[0] = 0x04;
-    }
-    if(mode == DiagReaderModeClassic) {
-        instance->identity.sak = 0x18;
-        instance->identity.atqa[0] = instance->identity.uid_size == 7 ? 0x42 : 0x02;
-        instance->identity.atqa[1] = 0;
-    }
+    uint8_t random_uid[4] = {0};
+    if(mode != DiagReaderModeField && !identity) furi_hal_random_fill_buf(random_uid, sizeof(random_uid));
+    bool synthetic = false;
+    if(!reader_configure_stimulus(mode, identity, random_uid, &instance->identity, &synthetic)) return false;
     DateTime rtc;
     furi_hal_rtc_get_datetime(&rtc);
     char timestamp[DIAG_TIMESTAMP_CAPACITY];
@@ -932,7 +958,7 @@ bool diag_reader_start(DiagReader* instance, DiagReaderMode mode, const DiagIsoA
     instance->started_tick = furi_get_tick();
     furi_mutex_acquire(instance->mutex, FuriWaitForever);
     reader_core_init(&instance->core, mode);
-    instance->core.stats.synthetic_identity = !identity;
+    instance->core.stats.synthetic_identity = synthetic;
     diag_model_set_timestamp(&instance->core.model, timestamp);
     diag_model_set_runtime_provenance(&instance->core.model, DIAG_FIRMWARE_BUILD, runtime);
     if(mode != DiagReaderModeField) {
@@ -969,6 +995,13 @@ void diag_reader_snapshot(DiagReader* instance, DiagModel* model, DiagReaderStat
     furi_mutex_acquire(instance->mutex, FuriWaitForever);
     reader_snapshot_core(&instance->core, model, stats);
     if(stats) stats->events_dropped = __atomic_load_n(&instance->queue_dropped, __ATOMIC_RELAXED);
+    furi_mutex_release(instance->mutex);
+}
+
+void diag_reader_stimulus(DiagReader* instance, DiagIsoAIdentity* identity) {
+    if(!instance || !identity) return;
+    furi_mutex_acquire(instance->mutex, FuriWaitForever);
+    *identity = instance->identity;
     furi_mutex_release(instance->mutex);
 }
 

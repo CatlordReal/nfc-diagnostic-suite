@@ -4,7 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "diag_model.h"
-#define DIAG_UI_TEXT_SIZE 2048
+#define DIAG_UI_TEXT_SIZE 256u
+#define DIAG_UI_DETAIL_TEXT_LIMIT 2048u
 #define DIAG_MENU_COUNT 6
 
 typedef enum {
@@ -19,6 +20,8 @@ typedef enum {
 typedef struct {
     char title[32];
     char text[DIAG_UI_TEXT_SIZE];
+    char* detail_text;
+    size_t detail_capacity;
     size_t line_count;
     size_t scroll;
     size_t selected;
@@ -38,9 +41,13 @@ typedef struct {
 extern const char* const diag_menu_items[DIAG_MENU_COUNT];
 extern const char* const diag_reader_menu_items[6];
 extern const char* const diag_saved_menu_items[2];
-extern const char* const diag_session_menu_items[6];
+extern const char* const diag_session_menu_items[8];
 extern const char* const diag_workflow_start_items[2];
 extern const char* const diag_workflow_menu_items[16];
+/* Zero-initialize before first use. Call under the UI mutex before the first
+   radio memory check, and call diag_ui_free after viewport callbacks stop. */
+void diag_ui_prepare_radio(DiagUi* ui);
+void diag_ui_free(DiagUi* ui);
 void diag_ui_menu(DiagUi* ui, const char* title, const char* const* items, size_t count);
 void diag_ui_text(DiagUi* ui, const char* title, const char* text, bool preserve_scroll);
 /* Formats only the visible window; retains no model pointer. Call again after
