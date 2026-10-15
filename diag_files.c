@@ -38,6 +38,8 @@
     ((UINT32_C(1) << DIAG_NFC_PROTOCOL_COUNT) - UINT32_C(1))
 
 typedef size_t (*DiagRead)(void* context, uint8_t* data, size_t size);
+typedef int32_t (*DiagDirectoryMkdir)(void* context, const char* path);
+typedef int32_t (*DiagDirectoryStat)(void* context, const char* path, bool* is_directory);
 
 typedef struct {
     DiagRead read;
@@ -115,6 +117,50 @@ static bool diag_size_add(size_t left, size_t right, size_t* result) {
     if(left > SIZE_MAX - right) return false;
     *result = left + right;
     return true;
+}
+
+static int32_t diag_ensure_directory_components(
+    const char* directory,
+    DiagDirectoryMkdir mkdir_operation,
+    DiagDirectoryStat stat_operation,
+    void* context,
+    int32_t ok_code,
+    int32_t exists_code,
+    int32_t invalid_code,
+    char* failed_path,
+    size_t failed_path_capacity) {
+    if(failed_path && failed_path_capacity) failed_path[0] = '\0';
+    if(!directory || !mkdir_operation || !stat_operation || directory[0] != '/')
+        return invalid_code;
+    const size_t source_size = diag_bounded_strlen(directory, DIAG_FILES_PATH_CAPACITY);
+    if(source_size < 2u || source_size >= DIAG_FILES_PATH_CAPACITY) return invalid_code;
+    char path[DIAG_FILES_PATH_CAPACITY];
+    memcpy(path, directory, source_size + 1u);
+    size_t path_size = source_size;
+    while(path_size > 1u && path[path_size - 1u] == '/') path[--path_size] = '\0';
+    size_t mount_end = 1u;
+    while(mount_end < path_size && path[mount_end] != '/') ++mount_end;
+    if(mount_end == 1u) return invalid_code;
+    for(size_t index = mount_end + 1u; index <= path_size; ++index) {
+        if(path[index] != '/' && path[index] != '\0') continue;
+        if(index == 1u || path[index - 1u] == '/') return invalid_code;
+        const char saved = path[index];
+        path[index] = '\0';
+        int32_t error = mkdir_operation(context, path);
+        if(error == exists_code) {
+            bool is_directory = false;
+            error = stat_operation(context, path, &is_directory);
+            if(error == ok_code && !is_directory) error = invalid_code;
+        }
+        if(error != ok_code) {
+            if(failed_path && failed_path_capacity)
+                snprintf(failed_path, failed_path_capacity, "%s", path);
+            path[index] = saved;
+            return error;
+        }
+        path[index] = saved;
+    }
+    return ok_code;
 }
 
 static bool diag_heap_values_sufficient(
@@ -1062,6 +1108,28 @@ bool diag_files_test_heap_sufficient(
     return diag_heap_values_sufficient(
         free_heap, max_free_block, requested_total, largest_allocation);
 }
+
+int32_t diag_files_test_ensure_directory(
+    const char* directory,
+    DiagFilesTestMkdir mkdir_operation,
+    DiagFilesTestStatDir stat_operation,
+    void* context,
+    int32_t ok_code,
+    int32_t exists_code,
+    int32_t invalid_code,
+    char* failed_path,
+    size_t failed_path_capacity) {
+    return diag_ensure_directory_components(
+        directory,
+        mkdir_operation,
+        stat_operation,
+        context,
+        ok_code,
+        exists_code,
+        invalid_code,
+        failed_path,
+        failed_path_capacity);
+}
 #endif
 
 #ifndef DIAG_FILES_HOST
@@ -1071,6 +1139,162 @@ static void diag_explain(FuriString* explanation, DiagFileStatus status) {
 
 static void diag_explain_low_memory(FuriString* explanation) {
     if(explanation) furi_string_set(explanation, "Low memory");
+}
+
+typedef enum {
+    DiagStoragePhaseNone = 0,
+    DiagStoragePhaseCreateDirectory,
+    DiagStoragePhaseCheckDestination,
+    DiagStoragePhaseOpenOutput,
+    DiagStoragePhaseWriteOutput,
+    DiagStoragePhaseSyncOutput,
+    DiagStoragePhaseCloseOutput,
+    DiagStoragePhasePublish,
+} DiagStoragePhase;
+
+typedef struct {
+    FS_Error error;
+    DiagStoragePhase phase;
+    const char* path;
+    bool temp_may_remain;
+} DiagStorageFailure;
+
+static const char* diag_storage_phase_string(DiagStoragePhase phase) {
+    switch(phase) {
+    case DiagStoragePhaseCreateDirectory:
+        return "create directory";
+    case DiagStoragePhaseCheckDestination:
+        return "check destination";
+    case DiagStoragePhaseOpenOutput:
+        return "open output";
+    case DiagStoragePhaseWriteOutput:
+        return "write output";
+    case DiagStoragePhaseSyncOutput:
+        return "sync output";
+    case DiagStoragePhaseCloseOutput:
+        return "close output";
+    case DiagStoragePhasePublish:
+        return "publish file";
+    default:
+        return "storage operation";
+    }
+}
+
+static void diag_storage_failure_set(
+    DiagStorageFailure* failure,
+    FS_Error error,
+    DiagStoragePhase phase,
+    const char* path) {
+    if(!failure || failure->phase != DiagStoragePhaseNone) return;
+    failure->error = error == FSE_OK ? FSE_INTERNAL : error;
+    failure->phase = phase;
+    failure->path = path;
+}
+
+static void diag_explain_storage_failure(
+    FuriString* explanation,
+    const char* label,
+    DiagFileStatus status,
+    const DiagStorageFailure* failure) {
+    if(!explanation) return;
+    if(!failure || failure->phase == DiagStoragePhaseNone) {
+        furi_string_printf(explanation, "%s: %s", label, diag_file_status_string(status));
+        return;
+    }
+    furi_string_printf(
+        explanation,
+        "%s %s failed: %s (FS_Error %u)\n%s%s",
+        label,
+        diag_storage_phase_string(failure->phase),
+        storage_error_get_desc(failure->error),
+        (unsigned)failure->error,
+        failure->path ? failure->path : "Path unavailable",
+        failure->temp_may_remain ? "\nTemporary file may remain." : "");
+}
+
+static int32_t diag_storage_mkdir(void* context, const char* path) {
+    return storage_common_mkdir(context, path);
+}
+
+static int32_t diag_storage_stat_directory(
+    void* context,
+    const char* path,
+    bool* is_directory) {
+    FileInfo info;
+    FS_Error error = storage_common_stat(context, path, &info);
+    if(error == FSE_OK) *is_directory = file_info_is_dir(&info);
+    return error;
+}
+
+static FS_Error diag_storage_check_mount(
+    Storage* storage,
+    const char* directory,
+    char* failed_path,
+    size_t failed_path_capacity) {
+    const size_t directory_size = diag_bounded_strlen(directory, DIAG_FILES_PATH_CAPACITY);
+    if(directory_size < 2u || directory_size >= DIAG_FILES_PATH_CAPACITY || directory[0] != '/')
+        return FSE_INVALID_NAME;
+    size_t mount_size = 1u;
+    while(mount_size < directory_size && directory[mount_size] != '/') ++mount_size;
+    if(mount_size == 1u) return FSE_INVALID_NAME;
+    char mount[DIAG_FILES_PATH_CAPACITY];
+    memcpy(mount, directory, mount_size);
+    mount[mount_size] = '\0';
+
+    File* directory_handle = storage_file_alloc(storage);
+    const bool opened = storage_dir_open(directory_handle, mount);
+    const FS_Error open_error = storage_file_get_error(directory_handle);
+    const bool closed = storage_dir_close(directory_handle);
+    const FS_Error close_error = storage_file_get_error(directory_handle);
+    storage_file_free(directory_handle);
+    if(opened && closed) return FSE_OK;
+    if(failed_path && failed_path_capacity)
+        snprintf(failed_path, failed_path_capacity, "%s", mount);
+    FS_Error error = opened ? close_error : open_error;
+    return error == FSE_OK ? FSE_INTERNAL : error;
+}
+
+static FS_Error diag_ensure_directory(
+    Storage* storage,
+    const char* directory,
+    char* failed_path,
+    size_t failed_path_capacity) {
+    FS_Error mount_error = diag_storage_check_mount(
+        storage, directory, failed_path, failed_path_capacity);
+    if(mount_error != FSE_OK) return mount_error;
+    return (FS_Error)diag_ensure_directory_components(
+        directory,
+        diag_storage_mkdir,
+        diag_storage_stat_directory,
+        storage,
+        FSE_OK,
+        FSE_EXIST,
+        FSE_INVALID_NAME,
+        failed_path,
+        failed_path_capacity);
+}
+
+DiagFileStatus diag_files_ensure_directory(
+    Storage* storage,
+    const char* directory,
+    FuriString* explanation) {
+    if(!storage || !directory || !*directory) return DiagFileStatusInvalidArgument;
+    char failed_directory[DIAG_FILES_PATH_CAPACITY] = {0};
+    const FS_Error error = diag_ensure_directory(
+        storage, directory, failed_directory, sizeof(failed_directory));
+    if(error == FSE_OK) {
+        diag_explain(explanation, DiagFileStatusOk);
+        return DiagFileStatusOk;
+    }
+    DiagStorageFailure failure = {
+        .error = error,
+        .phase = DiagStoragePhaseCreateDirectory,
+        .path = failed_directory,
+    };
+    const DiagFileStatus status =
+        error == FSE_INVALID_NAME ? DiagFileStatusInvalidArgument : DiagFileStatusIo;
+    diag_explain_storage_failure(explanation, "Directory", status, &failure);
+    return status;
 }
 
 static bool diag_nfc_heap_sufficient(
@@ -1558,23 +1782,48 @@ DiagFileStatus diag_files_save_session(
     }
     size_t size = 0;
     DiagFileStatus status = diag_session_encode(model, buffer, capacity, &size);
+    DiagStorageFailure failure = {0};
     if(status == DiagFileStatusOk) {
         File* file = storage_file_alloc(storage);
         bool created = false;
         if(!storage_file_open(file, path, FSAM_WRITE, FSOM_CREATE_NEW)) {
-            status = storage_file_get_error(file) == FSE_EXIST ? DiagFileStatusExists :
-                                                                DiagFileStatusIo;
+            FS_Error error = storage_file_get_error(file);
+            status = error == FSE_EXIST ? DiagFileStatusExists : DiagFileStatusIo;
+            diag_storage_failure_set(&failure, error, DiagStoragePhaseOpenOutput, path);
         } else {
             created = true;
-            if(storage_file_write(file, buffer, size) != size || !storage_file_sync(file))
+            if(storage_file_write(file, buffer, size) != size) {
                 status = DiagFileStatusIo;
+                diag_storage_failure_set(
+                    &failure,
+                    storage_file_get_error(file),
+                    DiagStoragePhaseWriteOutput,
+                    path);
+            } else if(!storage_file_sync(file)) {
+                status = DiagFileStatusIo;
+                diag_storage_failure_set(
+                    &failure,
+                    storage_file_get_error(file),
+                    DiagStoragePhaseSyncOutput,
+                    path);
+            }
         }
-        if(!storage_file_close(file) && status == DiagFileStatusOk) status = DiagFileStatusIo;
+        const bool closed = storage_file_close(file);
+        const FS_Error close_error = closed ? FSE_OK : storage_file_get_error(file);
+        if(!closed && status == DiagFileStatusOk) {
+            status = DiagFileStatusIo;
+            diag_storage_failure_set(
+                &failure, close_error, DiagStoragePhaseCloseOutput, path);
+        }
         storage_file_free(file);
-        if(created && status != DiagFileStatusOk) storage_simply_remove(storage, path);
+        if(created && status != DiagFileStatusOk) {
+            FS_Error cleanup = storage_common_remove(storage, path);
+            if(cleanup != FSE_OK && cleanup != FSE_NOT_EXIST) failure.temp_may_remain = true;
+        }
     }
     free(buffer);
-    diag_explain(explanation, status);
+    if(status == DiagFileStatusOk) diag_explain(explanation, status);
+    else diag_explain_storage_failure(explanation, "Session", status, &failure);
     return status;
 }
 
@@ -1605,6 +1854,7 @@ DiagFileStatus diag_files_load_session(
 typedef struct {
     File* file;
     bool failed;
+    FS_Error error;
     uint8_t buffer[512];
     size_t used;
 } DiagFileWriter;
@@ -1613,6 +1863,8 @@ static bool diag_file_writer_flush(DiagFileWriter* writer) {
     if(writer->failed) return false;
     if(writer->used && storage_file_write(writer->file, writer->buffer, writer->used) != writer->used) {
         writer->failed = true;
+        writer->error = storage_file_get_error(writer->file);
+        if(writer->error == FSE_OK) writer->error = FSE_INTERNAL;
         return false;
     }
     writer->used = 0;
@@ -1640,7 +1892,8 @@ static DiagFileStatus diag_export_one(
     Storage* storage,
     const char* final_path,
     const DiagModel* model,
-    bool json) {
+    bool json,
+    DiagStorageFailure* failure) {
     char temp_path[DIAG_FILES_PATH_CAPACITY + 5u];
     int length = snprintf(temp_path, sizeof(temp_path), "%s.tmp", final_path);
     if(length < 0 || (size_t)length >= sizeof(temp_path)) return DiagFileStatusInvalidArgument;
@@ -1648,29 +1901,72 @@ static DiagFileStatus diag_export_one(
     DiagFileStatus status = DiagFileStatusOk;
     bool created = false;
     if(!storage_file_open(file, temp_path, FSAM_WRITE, FSOM_CREATE_NEW)) {
-        status = storage_file_get_error(file) == FSE_EXIST ? DiagFileStatusExists :
-                                                            DiagFileStatusIo;
+        FS_Error error = storage_file_get_error(file);
+        status = error == FSE_EXIST ? DiagFileStatusExists : DiagFileStatusIo;
+        diag_storage_failure_set(failure, error, DiagStoragePhaseOpenOutput, final_path);
     } else {
         created = true;
         DiagFileWriter writer = {.file = file};
         bool exported = json ? diag_model_export_json(model, diag_file_writer, &writer) :
                                diag_model_export_csv(model, diag_file_writer, &writer);
-        if(!exported || !diag_file_writer_flush(&writer) || !storage_file_sync(file))
+        if(!exported || !diag_file_writer_flush(&writer)) {
             status = DiagFileStatusIo;
+            diag_storage_failure_set(
+                failure,
+                writer.error,
+                DiagStoragePhaseWriteOutput,
+                final_path);
+        } else if(!storage_file_sync(file)) {
+            status = DiagFileStatusIo;
+            diag_storage_failure_set(
+                failure,
+                storage_file_get_error(file),
+                DiagStoragePhaseSyncOutput,
+                final_path);
+        }
     }
-    if(!storage_file_close(file) && status == DiagFileStatusOk) status = DiagFileStatusIo;
+    const bool closed = storage_file_close(file);
+    const FS_Error close_error = closed ? FSE_OK : storage_file_get_error(file);
+    if(!closed && status == DiagFileStatusOk) {
+        status = DiagFileStatusIo;
+        diag_storage_failure_set(
+            failure, close_error, DiagStoragePhaseCloseOutput, final_path);
+    }
     storage_file_free(file);
     if(status == DiagFileStatusOk) {
         FS_Error error = storage_common_rename_safe(storage, temp_path, final_path);
-        if(error != FSE_OK) status = error == FSE_EXIST ? DiagFileStatusExists : DiagFileStatusIo;
+        if(error != FSE_OK) {
+            status = error == FSE_EXIST ? DiagFileStatusExists : DiagFileStatusIo;
+            diag_storage_failure_set(failure, error, DiagStoragePhasePublish, final_path);
+        }
     }
-    if(created && status != DiagFileStatusOk) storage_simply_remove(storage, temp_path);
+    if(created && status != DiagFileStatusOk) {
+        FS_Error cleanup = storage_common_remove(storage, temp_path);
+        if(cleanup != FSE_OK && cleanup != FSE_NOT_EXIST && failure)
+            failure->temp_may_remain = true;
+    }
     return status;
 }
 
-static bool diag_path_exists(Storage* storage, const char* path) {
+static DiagFileStatus diag_path_exists(
+    Storage* storage,
+    const char* path,
+    const char* explanation_path,
+    bool* exists,
+    DiagStorageFailure* failure) {
     FileInfo info;
-    return storage_common_stat(storage, path, &info) == FSE_OK;
+    FS_Error error = storage_common_stat(storage, path, &info);
+    if(error == FSE_OK) {
+        *exists = true;
+        return DiagFileStatusOk;
+    }
+    if(error == FSE_NOT_EXIST) {
+        *exists = false;
+        return DiagFileStatusOk;
+    }
+    diag_storage_failure_set(
+        failure, error, DiagStoragePhaseCheckDestination, explanation_path);
+    return DiagFileStatusIo;
 }
 
 static DiagFileStatus diag_set_export_paths(
@@ -1678,7 +1974,8 @@ static DiagFileStatus diag_set_export_paths(
     const char* directory,
     const char* basename,
     unsigned suffix,
-    DiagFilesExportResult* result) {
+    DiagFilesExportResult* result,
+    DiagStorageFailure* failure) {
     const char* separator = directory[strlen(directory) - 1u] == '/' ? "" : "/";
     char stem[96];
     int stem_size = suffix ? snprintf(stem, sizeof(stem), "%s%u", basename, suffix) :
@@ -1698,12 +1995,48 @@ static DiagFileStatus diag_set_export_paths(
     char temp[DIAG_FILES_PATH_CAPACITY + 5u];
     int temp_size = snprintf(temp, sizeof(temp), "%s.tmp", result->json_path);
     if(temp_size < 0 || (size_t)temp_size >= sizeof(temp)) return DiagFileStatusInvalidArgument;
-    if(diag_path_exists(storage, result->json_path) || diag_path_exists(storage, result->csv_path) ||
-       diag_path_exists(storage, result->session_path) || diag_path_exists(storage, temp))
-        return DiagFileStatusExists;
+    const char* paths[] = {result->json_path, result->csv_path, result->session_path, temp};
+    const char* explanation_paths[] = {
+        result->json_path, result->csv_path, result->session_path, result->json_path};
+    for(size_t index = 0u; index < sizeof(paths) / sizeof(paths[0]); ++index) {
+        bool exists = false;
+        DiagFileStatus status = diag_path_exists(
+            storage, paths[index], explanation_paths[index], &exists, failure);
+        if(status != DiagFileStatusOk) return status;
+        if(exists) return DiagFileStatusExists;
+    }
     temp_size = snprintf(temp, sizeof(temp), "%s.tmp", result->csv_path);
     if(temp_size < 0 || (size_t)temp_size >= sizeof(temp)) return DiagFileStatusInvalidArgument;
-    return diag_path_exists(storage, temp) ? DiagFileStatusExists : DiagFileStatusOk;
+    bool exists = false;
+    DiagFileStatus status =
+        diag_path_exists(storage, temp, result->csv_path, &exists, failure);
+    if(status != DiagFileStatusOk) return status;
+    return exists ? DiagFileStatusExists : DiagFileStatusOk;
+}
+
+static void diag_append_export_outcome(
+    FuriString* explanation,
+    const char* label,
+    DiagFileStatus status,
+    const char* path,
+    const DiagStorageFailure* failure) {
+    if(furi_string_size(explanation)) furi_string_cat_str(explanation, "\n");
+    if(status == DiagFileStatusOk) {
+        furi_string_cat_printf(explanation, "%s saved:\n%s", label, path);
+    } else if(failure && failure->phase != DiagStoragePhaseNone) {
+        furi_string_cat_printf(
+            explanation,
+            "%s %s failed: %s (FS_Error %u)\n%s%s",
+            label,
+            diag_storage_phase_string(failure->phase),
+            storage_error_get_desc(failure->error),
+            (unsigned)failure->error,
+            failure->path ? failure->path : path,
+            failure->temp_may_remain ? "\nTemporary file may remain." : "");
+    } else {
+        furi_string_cat_printf(
+            explanation, "%s: %s\n%s", label, diag_file_status_string(status), path);
+    }
 }
 
 DiagFileStatus diag_files_export_reports(
@@ -1717,16 +2050,22 @@ DiagFileStatus diag_files_export_reports(
        !diag_model_valid(model) || strchr(basename, '/') || strchr(basename, '\\'))
         return DiagFileStatusInvalidArgument;
     memset(result, 0, sizeof(*result));
+    DiagFileStatus directory_status =
+        diag_files_ensure_directory(storage, directory, explanation);
+    if(directory_status != DiagFileStatusOk) return directory_status;
     bool paths_found = false;
+    DiagStorageFailure path_failure = {0};
     for(unsigned suffix = 0; suffix < 1000u; ++suffix) {
         DiagFileStatus path_status =
-            diag_set_export_paths(storage, directory, basename, suffix, result);
+            diag_set_export_paths(
+                storage, directory, basename, suffix, result, &path_failure);
         if(path_status == DiagFileStatusOk) {
             paths_found = true;
             break;
         }
         if(path_status != DiagFileStatusExists) {
-            diag_explain(explanation, path_status);
+            diag_explain_storage_failure(
+                explanation, "Export", path_status, &path_failure);
             return path_status;
         }
     }
@@ -1734,8 +2073,12 @@ DiagFileStatus diag_files_export_reports(
         diag_explain(explanation, DiagFileStatusExists);
         return DiagFileStatusExists;
     }
-    result->json_status = diag_export_one(storage, result->json_path, model, true);
-    result->csv_status = diag_export_one(storage, result->csv_path, model, false);
+    DiagStorageFailure json_failure = {0};
+    DiagStorageFailure csv_failure = {0};
+    result->json_status =
+        diag_export_one(storage, result->json_path, model, true, &json_failure);
+    result->csv_status =
+        diag_export_one(storage, result->csv_path, model, false, &csv_failure);
     DiagFileStatus status;
     if(result->json_status == DiagFileStatusOk && result->csv_status == DiagFileStatusOk) {
         status = DiagFileStatusOk;
@@ -1744,7 +2087,21 @@ DiagFileStatus diag_files_export_reports(
     } else {
         status = DiagFileStatusPartial;
     }
-    diag_explain(explanation, status);
+    if(explanation) {
+        furi_string_reset(explanation);
+        diag_append_export_outcome(
+            explanation,
+            "JSON",
+            result->json_status,
+            result->json_path,
+            &json_failure);
+        diag_append_export_outcome(
+            explanation,
+            "CSV",
+            result->csv_status,
+            result->csv_path,
+            &csv_failure);
+    }
     return status;
 }
 #endif

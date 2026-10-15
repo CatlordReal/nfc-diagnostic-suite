@@ -14,6 +14,8 @@ bool diag_nfc_start(DiagNfc* instance);
 void diag_nfc_cancel(DiagNfc* instance);
 bool diag_nfc_is_running(DiagNfc* instance);
 void diag_nfc_snapshot(DiagNfc* instance, DiagModel* destination);
+bool diag_nfc_read_model(
+    DiagNfc* instance, DiagModelReadCallback callback, void* context);
 
 /* Deadlines bound waiting, not firmware stop/join of an in-flight RF transaction. */
 #define DIAG_NFC_DISCOVERY_TIMEOUT_MS 12000u
@@ -22,6 +24,8 @@ void diag_nfc_snapshot(DiagNfc* instance, DiagModel* destination);
 #ifdef DIAG_NFC_TESTING
 /* Host-only transport seam. These call the live engine's evidence evaluators;
    they do not simulate RF timing, HAL ownership, or physical card behavior. */
+bool diag_nfc_test_scanner_candidates(
+    const uint8_t* protocols, size_t count, uint32_t* candidates);
 bool diag_nfc_test_identity_a(
     DiagModel* model, const uint8_t* uid, size_t uid_size,
     const uint8_t atqa[2], uint8_t sak);

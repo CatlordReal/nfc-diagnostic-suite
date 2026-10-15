@@ -1,34 +1,18 @@
-NFC Diagnostic Suite 2.0 verification
+NFC Diagnostic Suite 2.0.1 verification
 
-Native build: scripts/build.sh exited 0 against actual Momentum source.
-All four FAP targets passed native APPCHK. Every imported symbol is enabled.
-Every embedded launcher icon matches the corresponding source asset.
-MFKey embedded plugin asset integrity and all imports passed separately.
+Target: installed Momentum mntm-012, e1784e7418d8b074e971983ceb6fef0f37e52ae4, API 87.1.
+Native FBT compiled all nine C files with warnings as errors against that exact tree.
+APPCHK passed. 225 imports are enabled. Embedded icon matches source PNG.
 
-API version 87.1 is up to date
-	APPCHK	build/f7-firmware-C/.extapps/picopass.fap
-	APPCHK	build/f7-firmware-C/.extapps/mfkey.fap
-	APPCHK	build/f7-firmware-C/.extapps/nfc_magic.fap
-	APPCHK	build/f7-firmware-C/.extapps/nfc_diagnostic_suite.fap
-nfc_diagnostic_suite.fap: 211 enabled imports; API and launcher icon verified
-Embedded mfkey_init_plugin.fal: 29 enabled imports; assets integrity passed
-mfkey.fap: 66 enabled imports; API and launcher icon verified
-nfc_magic.fap: 217 enabled imports; API and launcher icon verified
-picopass.fap: 222 enabled imports; API and launcher icon verified
+Commands (external toolchain reused; firmware source unchanged):
+FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" scripts/test.sh
+FBT_TOOLCHAIN_PATH="$PWD/.momentum" MOMENTUM_DIR="$PWD/.momentum-mntm012" scripts/build.sh
+python3 scripts/package.py
 
-Momentum source: d3f89dfe2ef6b01839201598e9be1590cba80322
-Momentum-Apps source: 55a446b1b01bf2a2f98161d704e62cc47075ad30
-Version,+,87.1,,
-50226393335da760309d7ce27a0305ef023604a5879d8881cab52e3b98f1c14b  nfc_diagnostic_suite.fap
-3bf395cd759b77f06270ac867d3aef92958430a88724e4c022a877f60fe8d2a1  apps/NFC/mfkey.fap
-50226393335da760309d7ce27a0305ef023604a5879d8881cab52e3b98f1c14b  apps/NFC/nfc_diagnostic_suite.fap
-9af040c2157ec76553552ff37fb093a0a4a13d23171181749877c08a07a58b35  apps/NFC/nfc_magic.fap
-d1d1cc0cbe78aa667b53c5d9720272b02d9d5c0396cebe75eb933ac16e0863cf  apps/NFC/picopass.fap
-
-Host suite (scripts/test.sh exited 0):
 diag_model tests passed
 diag_model tests passed
 diag_files tests passed
+diag_nfc evidence tests passed
 diag_nfc evidence tests passed
 diag_nfc evidence tests passed
 diag_lf evidence tests passed
@@ -37,40 +21,76 @@ diag_reader callback/evidence tests passed
 diag_reader callback/evidence tests passed
 diag_workflow tests passed
 diag_capabilities tests passed
-UI renderer and navigation checks passed
+UI renderer, virtual log, wrap checks passed; DiagUi host=2176 bytes
 Host checks passed. Physical NFC/LF, reader interaction, SD, USB, handoffs and XP remain hardware acceptance checks.
 
-Independent reviews: NFC evidence and core model, LF engine, reader event/nonce path,
-file trust boundaries, workflow persistence/controller, capability planner, packaging.
-Findings were corrected and rechecked before this build.
+Physical symptom and corrective design:
+The user's read-screen photo showed free heap 26,080 bytes, guard 40,960 bytes,
+largest block 19,952 bytes. This was a pre-allocation rejection, not an active-read crash.
+The old permanent application state duplicated full models and large text/line buffers.
+The revised state uses lazy result and repeat allocations, one live backend model,
+compact reference observations, bounded UI text and virtual full-history log windows.
+Completed radio workers drain before copying final evidence or choosing a file.
 
-ARM compiler stack evidence: -fstack-usage and -Wstack-usage=1536 enabled.
-Largest individual application function frames (not complete call-chain bounds):
-diag_model_selftest: 1104 bytes
+Target sizes come from ARM DWARF, not host layouts:
+DiagApp: 3260 bytes
+DiagUi: 2152 bytes
+DiagModel: 6984 bytes
+DiagObservation: 208 bytes
+Five observations: 1040 bytes
+Startup state reduction: 22388 bytes
+
+Linked sections (not complete runtime heap use):
+text	   data	    bss	    dec	    hex	filename
+  75456	      0	      0	  75456	  126c0	/Users/kianconti/dev/projects/nfc-diagnostic-suite/.momentum-mntm012/build/f7-firmware-C/.extapps/nfc_diagnostic_suite_d.elf
+
+The earlier state used 25,648 bytes; UI alone used 9,792 bytes.
+Keep the 40 KiB NFC/card reserve and 12 KiB contiguous-block guard; repeat adds
+1,040 bytes. These are source-derived allocation budgets, not measured device headroom.
+Low-memory preflight preserves prior evidence on expected refusal. Native malloc can
+assert under unexpected concurrent heap exhaustion; physical contention is untested.
+
+Host regression coverage includes evidence/provenance, short-enum scanner results,
+legacy/v2 sessions, malformed/untrusted card files, root-mount directory handling,
+non-overwrite publication and storage failures, capability gating, workflow return
+matrix, menu wrap, 10-pixel text pitch and all 64 virtual log entries. Test-only
+simulation helpers are excluded from production; no test/demo UI ships.
+
+Independent agents inspected actual changes and tests: UI/virtual logs, model visitors,
+scanner ABI, compact comparison, storage mount behavior/publication/errors, workflow
+resume, source rollback, optional tool fallback, repeat allocation, memory lifetimes,
+Dolphin gates (native weights: attempts 1, successful reads/saves 3,
+Classic reader detection 1), installed skill and installer allowlist. Blocking findings were fixed
+and rechecked. Standard loader deferred-launch queue capacity remains firmware-owned.
+
+Target stack instrumentation recompiles all nine sources with actual FBT flags
+plus -fstack-usage -Wstack-usage=1536. Largest individual frames (not call-chain bounds):
 diag_repeatability_analyze: 1072 bytes
-save: 864 bytes
+save: 856 bytes
 diag_export_one: 824 bytes
 diag_preflight_rfid_file: 768 bytes
 diag_preflight_nfc_file: 704 bytes
+diag_files_ensure_directory.part.0: 576 bytes
+diag_nfc_worker: 552 bytes
+reader_append_pairs.constprop: 520 bytes
+diag_reader_library_info: 512 bytes
+diag_set_export_paths: 464 bytes
 
-FAP linked code/data size (runtime-loaded sections; not complete heap use):
-   text	   data	    bss	    dec	    hex	filename
-  74246	      0	      0	  74246	  12206	.momentum/build/f7-firmware-C/.extapps/nfc_diagnostic_suite_d.elf
+Renderer captures run production diag_ui.c with mntm-012 fonts and native assets,
+in a host 128x64 framebuffer with synthetic states. They are not physical screenshots,
+full firmware emulation, or RF proof. Native scanning art/buttons and screenshots
+are inspected before release. UI render runs also pass ASan/UBSan.
 
-Runtime heap checks reject operations with insufficient free heap or contiguous space.
-Conservative file-loading budgets guard native allocation and parser boundaries.
-Heap formulas and native call-chain assumptions still require physical acceptance.
-
-Renderer proof: tests/render_ui.c runs the production diag_ui.c and capability planner
-with Momentum u8g2 fonts in a 128x64 host framebuffer. Captures use simulated states;
-they are not physical LCD captures or complete firmware emulation. Gallery and GIFs
-were regenerated and inspected after integration.
-
-Hardware acceptance pending: no Flipper connected. NFC/LF coupling and detection,
-real reader exchanges, radio contention, native-app handoffs, actual on-device key
-recovery, SD I/O/power-loss, USB logs and Dolphin XP have not been physically tested.
-Installed firmware revision is unknown; this release targets pinned Momentum API87.1.
-No universal clone, calibrated RF measurement or reader-brand identification claim.
+Hardware acceptance pending: no Flipper is connected here. Actual NFC/LF coupling,
+reader exchanges, contention/cancel drain timing, SD/power-loss behavior, optional
+USB log transport, Dolphin XP, tool handoffs, recovery/write results and device RAM
+headroom require physical verification. No universal cloning, reader-brand detection,
+calibrated field measurement or access-system acceptance is claimed.
 
 Two unrelated Momentum manifest warnings (.cli_gui and .f0_mtp) occur before target
-compilation. None of the four shipped targets has a compiler/import error.
+compilation. The suite has no compiler/import error.
+
+Final artifact build record:
+Momentum source: e1784e7418d8b074e971983ceb6fef0f37e52ae4
+Version,+,87.1,,
+fa075a8398bc53ca4b82b4936ea46eb572e753b7f4988c96689c1ea4770d3fee  nfc_diagnostic_suite.fap

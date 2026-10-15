@@ -186,11 +186,31 @@ static bool test_failure_preserves_stage(void) {
     return true;
 }
 
+static bool test_scanner_candidate_copy(void) {
+    uint32_t candidates = 0;
+    uint8_t protocols[DIAG_NFC_PROTOCOL_COUNT];
+    for(size_t index = 0; index < sizeof(protocols); ++index) protocols[index] = (uint8_t)index;
+    CHECK(diag_nfc_test_scanner_candidates(protocols, sizeof(protocols), &candidates));
+    CHECK(candidates == ((1u << DIAG_NFC_PROTOCOL_COUNT) - 1u));
+    const uint8_t multiple[] = {DiagProtocolMfClassic, DiagProtocolMfUltralight, DiagProtocolMfClassic};
+    CHECK(diag_nfc_test_scanner_candidates(multiple, sizeof(multiple), &candidates));
+    CHECK(candidates == ((1u << DiagProtocolMfClassic) | (1u << DiagProtocolMfUltralight)));
+    CHECK(!diag_nfc_test_scanner_candidates(NULL, 1, &candidates) && candidates == 0);
+    CHECK(!diag_nfc_test_scanner_candidates(protocols, 0, &candidates) && candidates == 0);
+    CHECK(!diag_nfc_test_scanner_candidates(protocols, sizeof(protocols) + 1u, &candidates));
+    CHECK(candidates == 0);
+    CHECK(!diag_nfc_test_scanner_candidates(protocols, 1, NULL));
+    protocols[0] = 255;
+    CHECK(!diag_nfc_test_scanner_candidates(protocols, sizeof(protocols), &candidates));
+    CHECK(candidates == 0);
+    return true;
+}
+
 int main(void) {
     if(!test_iso_a_uid_sizes() || !test_sak_hints_are_candidates() ||
        !test_classic_nonce_exact_evidence() || !test_ultralight_version_validation() ||
        !test_plus_requires_direct_version() || !test_swapped_and_randomized_uid() ||
-       !test_failure_preserves_stage()) {
+       !test_failure_preserves_stage() || !test_scanner_candidate_copy()) {
         return EXIT_FAILURE;
     }
     puts("diag_nfc evidence tests passed");

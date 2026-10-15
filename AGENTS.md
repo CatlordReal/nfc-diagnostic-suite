@@ -1,8 +1,8 @@
 # NFC Diagnostic Suite
 
-Read the user's global AGENTS.md and installed caveman and cave-orchestrator skills before work.
+Read the user's global AGENTS.md and installed caveman, cave-orchestrator and `${CODEX_HOME:-$HOME/.codex}/skills/flipper-apps/SKILL.md` before work. Its scoped NFC Suite reference records this project's full requirements.
 
-Use Momentum firmware at the recorded source pin; do not assume upstream Flipper APIs match. The `.momentum` tree is a dependency, not this app's source. Keep its existing files unchanged.
+Target installed Momentum `mntm-012` (`e1784e7418d8b074e971983ceb6fef0f37e52ae4`, API 87.1); do not assume upstream Flipper APIs match. The `.momentum` tree is a dependency, not this app's source. Keep its existing files unchanged.
 
 Preserve exclusive radio ownership: callbacks copy bounded data; the owning worker stops and joins native operations before freeing resources. Never queue a native tool while retaining an active radio engine.
 
@@ -11,3 +11,5 @@ Keep scanner hints, command-confirmed evidence, saved records, simulations and u
 Every delivered FAP needs its custom launcher icon, source asset, metadata embedding check and enabled SDK import check. Run `scripts/test.sh` and `scripts/build.sh`; package with `python3 scripts/package.py`. Record physical-device limitations honestly. Host renderer captures are not hardware screenshots.
 
 Do not publish local reports, nonce logs, dictionaries, private card files, build caches, firmware checkouts or backups. Only synthetic fixtures belong in tests or captures.
+
+Keep Workflow first, About last. Integrate short results and final save into real card/reader steps, with File and active Log controls. Group saved-card tools and session tools. Keep production free of simulated tests, developer screens and generic control footers. Use native UI conventions, 10-pixel text spacing and wrapping menu navigation. Measure ARM RAM; retain one live model, allocate saved results only after radio drain.

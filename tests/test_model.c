@@ -204,10 +204,62 @@ static bool test_compare_and_repeatability(void) {
     CHECK(comparison.protocols_same);
     CHECK(comparison.metadata_same);
     CHECK(comparison.outcome_same);
+
+    DiagObservation left_observation;
+    DiagObservation right_observation;
+    CHECK(diag_model_observe(&left, &left_observation));
+    CHECK(diag_model_observe(&right, &right_observation));
+    DiagComparison observation_comparison =
+        diag_observation_compare(&left_observation, &right_observation);
+    CHECK(observation_comparison.identity_same == comparison.identity_same);
+    CHECK(observation_comparison.protocols_same == comparison.protocols_same);
+    CHECK(observation_comparison.metadata_same == comparison.metadata_same);
+    CHECK(observation_comparison.outcome_same == comparison.outcome_same);
+
     right.iso_a.atqa[0] ^= 1u;
     comparison = diag_model_compare(&left, &right);
     CHECK(!comparison.metadata_same);
     CHECK(comparison.identity_same);
+    CHECK(diag_model_observe(&right, &right_observation));
+    observation_comparison = diag_observation_compare(&left_observation, &right_observation);
+    CHECK(observation_comparison.identity_same == comparison.identity_same);
+    CHECK(observation_comparison.protocols_same == comparison.protocols_same);
+    CHECK(observation_comparison.metadata_same == comparison.metadata_same);
+    CHECK(observation_comparison.outcome_same == comparison.outcome_same);
+
+    right.identity.uid[0] ^= 1u;
+    right.protocol_candidates ^= (UINT32_C(1) << DiagProtocolIso14443_3b);
+    right.run_succeeded = false;
+    CHECK(diag_model_set_error(&right, "test.compare", -17));
+    comparison = diag_model_compare(&left, &right);
+    CHECK(diag_model_observe(&right, &right_observation));
+    observation_comparison = diag_observation_compare(&left_observation, &right_observation);
+    CHECK(observation_comparison.identity_same == comparison.identity_same);
+    CHECK(observation_comparison.protocols_same == comparison.protocols_same);
+    CHECK(observation_comparison.metadata_same == comparison.metadata_same);
+    CHECK(observation_comparison.outcome_same == comparison.outcome_same);
+    CHECK(!observation_comparison.identity_same);
+    CHECK(!observation_comparison.protocols_same);
+    CHECK(!observation_comparison.metadata_same);
+    CHECK(!observation_comparison.outcome_same);
+
+    DiagObservation empty_left = {0};
+    DiagObservation empty_right = {0};
+    observation_comparison = diag_observation_compare(&empty_left, &empty_right);
+    CHECK(!observation_comparison.identity_same);
+    CHECK(observation_comparison.protocols_same);
+    CHECK(!observation_comparison.metadata_same);
+    CHECK(observation_comparison.outcome_same);
+    observation_comparison = diag_observation_compare(NULL, &empty_right);
+    CHECK(!observation_comparison.identity_same);
+    CHECK(!observation_comparison.protocols_same);
+    CHECK(!observation_comparison.metadata_same);
+    CHECK(!observation_comparison.outcome_same);
+    observation_comparison = diag_observation_compare(&empty_left, NULL);
+    CHECK(!observation_comparison.identity_same);
+    CHECK(!observation_comparison.protocols_same);
+    CHECK(!observation_comparison.metadata_same);
+    CHECK(!observation_comparison.outcome_same);
 
     DiagObservation observations[DIAG_REPEATABILITY_RUNS];
     DiagModel scratch;

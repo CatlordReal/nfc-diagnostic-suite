@@ -2,8 +2,8 @@
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 firmware_dir=${MOMENTUM_DIR:-"$project_dir/.momentum"}
-revision=${1:-d3f89dfe2ef6b01839201598e9be1590cba80322}
-if [ ! -d "$firmware_dir/.git" ]; then
+revision=${1:-e1784e7418d8b074e971983ceb6fef0f37e52ae4}
+if [ ! -e "$firmware_dir/.git" ]; then
     if [ -e "$firmware_dir" ]; then
         printf '%s\n' 'Destination exists and is not a Git checkout; refusing replacement.' >&2
         exit 1

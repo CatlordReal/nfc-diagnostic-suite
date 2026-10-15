@@ -86,12 +86,53 @@ static void test_strict_bool_tokens(void) {
     assert(!diag_workflow_test_parse_bool("true", NULL));
 }
 
+static DiagStep expected_resume_step(bool have_card, uint32_t returned) {
+    switch(returned) {
+    case DiagWorkflowActionReadNfc:
+    case DiagWorkflowActionReadLf:
+        return StepChooseFile;
+    case DiagWorkflowActionMfkey:
+        return StepReread;
+    case DiagWorkflowActionWriteNfc:
+    case DiagWorkflowActionWriteLf:
+        return StepVerifyCopy;
+    case DiagWorkflowActionPicopass:
+        return have_card ? StepChooseFile : StepReaderReady;
+    default:
+        return have_card ? StepCardReady : StepReaderReady;
+    }
+}
+
+static void test_resume_steps(void) {
+    assert(diag_workflow_resume_step(NULL, DiagWorkflowActionReadNfc) == StepCardReady);
+
+    for(unsigned card = 0u; card < 2u; ++card) {
+        DiagWorkflow workflow;
+        diag_workflow_init(&workflow, card != 0u);
+        for(uint32_t action = DiagWorkflowActionNone;
+            action <= DiagWorkflowActionPicopass;
+            ++action) {
+            assert(diag_workflow_resume_step(&workflow, action) ==
+                   expected_resume_step(card != 0u, action));
+        }
+        assert(diag_workflow_resume_step(
+                   &workflow, DiagWorkflowActionPicopass + 1u) ==
+               expected_resume_step(card != 0u, DiagWorkflowActionNone));
+
+        workflow.band = DiagWorkflowBandNfc;
+        memcpy(workflow.source_path, "/ext/nfc/card.nfc", sizeof("/ext/nfc/card.nfc"));
+        assert(diag_workflow_resume_step(&workflow, DiagWorkflowActionNone) == StepOutcome);
+        assert(diag_workflow_resume_step(&workflow, DiagWorkflowActionVerify) == StepOutcome);
+    }
+}
+
 int main(void) {
     test_init();
     test_valid_nfc();
     test_valid_lf_and_bounds();
     test_empty_identity_consistency();
     test_strict_bool_tokens();
+    test_resume_steps();
     puts("diag_workflow tests passed");
     return 0;
 }

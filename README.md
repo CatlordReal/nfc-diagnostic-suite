@@ -1,35 +1,27 @@
 # NFC Diagnostic Suite
 
-Native NFC and 125 kHz RFID diagnostics for Flipper Zero with Momentum firmware. Inspect cards, observe readers, compare saved data, and follow guided actions for systems you own or are authorized to test. No expansion module is required. Support depends on the protocol, available source data, target card and reader; this is not a universal reader or cloning tool.
+Native 13.56 MHz NFC and 125 kHz RFID diagnostics for Flipper Zero with Momentum firmware. Inspect cards, observe readers, compare saved data and follow evidence-based actions on systems you own or are authorized to test. No expansion module is required.
 
 ## Install and use
 
-Download the [release ZIP](https://github.com/CatlordReal/nfc-diagnostic-suite/releases/latest), extract it, then copy the four files in `dist/apps/NFC/` to `SD/apps/NFC/` using qFlipper or an SD card reader:
+Download `nfc_diagnostic_suite.fap` from the [latest release](https://github.com/CatlordReal/nfc-diagnostic-suite/releases/latest), then copy it to `SD/apps/NFC/` with qFlipper or an SD card reader. The optional installer ZIP contains the same FAP, README, license, icon and build record.
 
-- `nfc_diagnostic_suite.fap`: diagnostics, guided workflow, session reports and comparison.
-- `mfkey.fap`: Momentum's native MFKey recovery app, including its embedded plugin.
-- `nfc_magic.fap`: Momentum's native tool for supported rewritable NFC cards.
-- `picopass.fap`: Momentum's **HID iClass (PicoPass)** app for its supported identification, reading and card actions.
+Open **NFC Diagnostic Suite → Workflow**, then choose **I have the card** or **I only have the reader**. Card identification tries NFC, then native LF decoding when no NFC identity appears. Reader diagnostics observe supported NFC/LF activity without inventing card data.
 
-Open **NFC Diagnostic Suite → Identify card (auto)**. It tries 13.56 MHz NFC, then native 125 kHz decoding if no NFC identity appears. **Scan 125 kHz RFID** starts LF directly; reader tests offer passive field observation, a synthetic Type A probe, and MIFARE Classic transcript collection. The guided workflow selects actions from the available evidence. Native NFC and 125 kHz RFID apps provide their supported reading, emulation and writing operations; the bundled companions provide their own supported operations. A successful read or matching saved file does not prove that an access system will accept a credential.
+The workflow shows one relevant step at a time:
 
-**Card workflow** starts with **I have a card** or **I have no card**. Follow **Guide / next steps**; only actions supported by the current evidence appear. Native tools open after this app releases its radio, then return to the saved workflow. Read and save the original, choose its source file, write a compatible blank in the native tool, read the blank into a different file, then **Verify saved copy**. Reader-only work may identify a band or collect supported exchanges; it cannot reconstruct missing card data.
+- **File** selects a saved source or verification target.
+- **Tools** shows actions supported by current evidence and installed tools.
+- **Log** opens live events during an active operation.
+- **Save** writes the final `.nds`, JSON and CSV reports to `SD/apps_data/nfc_diagnostic_suite/`.
 
-**Repeat test** runs five inspections using the last decoded card band (NFC by default); **Set baseline** and **Compare sessions** compare diagnostic evidence.
+After a write handoff, read the copy into a **new** file and compare it with the source. After a recovery handoff, re-read the original and save the new result. Returning from another tool never marks its operation successful.
 
-**Up/Down** scrolls. **Back** cancels an operation or returns. Results distinguish confirmed responses, candidates, saved evidence and simulations. Unknown or protected protocols remain inconclusive. Reader manufacturer/model, RF strength and chip authenticity are not inferred.
+**Saved cards** opens validated `.nfc` and `.rfid` files. **Sessions** opens reports, retains or compares a reference and repeats five reads using the last detected card band. **Up/Down** scrolls; **Back** cancels or returns.
 
-Reports go to `SD/apps_data/nfc_diagnostic_suite/` as `.nds`, JSON and CSV. They contain observed identifiers. Saved NFC/RFID files can be inspected and compared without changing the originals. Full emulation or writing can require complete source data, known keys and a compatible target. A Classic size inferred from SAK is labelled as a hint.
+Results distinguish direct confirmation, candidates and saved historical evidence. Saved-data equality does not prove physical identity or reader acceptance. Reports contain observed identifiers.
 
-Classic reader tests collect complete matching authentication transcript pairs, not just card nonces. Deduplicated pairs append to `SD/nfc/.mfkey32.log`; existing contents are preserved. Native MFKey consumes this format and writes recovered keys through its normal dictionary workflow. The library screen reports nonce and native dictionary counts without displaying keys. Recovery can fail; modern cryptography and protected systems are not bypassed by these diagnostics.
-
-Dolphin XP uses normal NFC/LF read, successful-read and first-save deeds. Repeat batches award one success deed; passive monitoring, simulations, browsing and repeated saves award none.
-
-For optional USB logs, run `log info` in the Flipper serial CLI, then enable USB diagnostics. Ctrl+C ends streaming. The app does not replace the USB configuration.
-
-## Build and test
-
-Requires Git, Python 3, `rg` and a C compiler for host tests. Momentum downloads its ARM toolchain on first build.
+## Build from source
 
 ```sh
 ./scripts/setup-momentum.sh
@@ -38,17 +30,9 @@ Requires Git, Python 3, `rg` and a C compiler for host tests. Momentum downloads
 python3 scripts/package.py
 ```
 
-Optional UI galleries use Pillow: `python3 scripts/make-previews.py` after renderer tests.
+Output: `dist/nfc_diagnostic_suite.fap` and optional five-file installer ZIP. Target: Momentum `mntm-012`, commit `e1784e7418d8b074e971983ceb6fef0f37e52ae4`, API **87.1**. `dist/BUILD.txt` records the built revision and checksum.
 
-The build produces the primary `dist/nfc_diagnostic_suite.fap`, all four apps under `dist/apps/NFC/`, source icons and license notices under `dist/vendor/`, and a source/distribution ZIP. Every app's imports, API metadata and embedded launcher icon are checked; MFKey's embedded plugin is checked separately.
-
-The default source pin is Momentum commit `d3f89dfe2ef6b01839201598e9be1590cba80322`, API **87.1**. `dist/BUILD.txt` records the actual build revision and checksums. The installed device revision remains unknown without device access. To match another Momentum checkout:
-
-```sh
-MOMENTUM_DIR=/path/to/Momentum-Firmware ./scripts/build.sh
-```
-
-Builds, host tests and renderer captures do **not** prove physical NFC/LF operation. No connected Flipper hardware has been tested. Some firmware operations can delay cancellation while their current transaction drains. See [coverage, architecture and proof limits](docs/ENGINEERING.md).
+Host builds and renderer captures do not prove physical RF behavior, cancellation timing, SD power-loss handling or reader acceptance. See [engineering details and proof limits](docs/ENGINEERING.md).
 
 ![Host-rendered UI previews](docs/captures/gallery.png)
 

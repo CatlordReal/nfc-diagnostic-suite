@@ -132,6 +132,10 @@ typedef struct {
     size_t logs_dropped;
 } DiagModel;
 
+/* Callback receives a borrowed model while its owner is locked. It must not
+   retain the pointer, reenter the owner, or block. */
+typedef void (*DiagModelReadCallback)(const DiagModel* model, void* context);
+
 typedef struct {
     bool identity_same;
     bool protocols_same;
@@ -165,11 +169,13 @@ typedef struct {
     bool outcome_repeatable;
 } DiagRepeatability;
 
+#ifdef DIAG_MODEL_TESTING
 typedef enum {
     DiagSimulationStableIsoA = 0,
     DiagSimulationFailureIncluded,
     DiagSimulationCandidateOnly,
 } DiagSimulationCase;
+#endif
 
 void diag_model_init(DiagModel* model, DiagProvenance provenance);
 bool diag_model_set_timestamp(DiagModel* model, const char* rtc_timestamp);
@@ -224,6 +230,9 @@ const char* diag_stage_advice(DiagStage stage);
 
 DiagComparison diag_model_compare(const DiagModel* left, const DiagModel* right);
 bool diag_model_observe(const DiagModel* model, DiagObservation* observation);
+DiagComparison diag_observation_compare(
+    const DiagObservation* left,
+    const DiagObservation* right);
 bool diag_observations_analyze(
     const DiagObservation observations[DIAG_REPEATABILITY_RUNS],
     DiagRepeatability* result);
@@ -234,13 +243,15 @@ bool diag_repeatability_analyze(
 bool diag_model_export_json(const DiagModel* model, DiagWriter writer, void* context);
 bool diag_model_export_csv(const DiagModel* model, DiagWriter writer, void* context);
 
+#ifdef DIAG_MODEL_TESTING
 bool diag_model_load_simulation(
     DiagModel* model,
     DiagSimulationCase simulation,
     size_t run_index);
 
-/* Small on-device check using the same comparison and repeatability paths as host tests. */
+/* Test-only check using the same comparison and repeatability paths as host tests. */
 bool diag_model_selftest(void);
+#endif
 
 #ifdef __cplusplus
 }

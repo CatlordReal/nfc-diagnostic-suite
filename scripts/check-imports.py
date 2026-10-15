@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Check every import, the launcher icon, and optional embedded FAL against the SDK."""
+"""Check every suite FAP import, API metadata, and launcher icon against the SDK."""
 import argparse
 import csv
-import hashlib
+import os
 from pathlib import Path
 import struct
 import subprocess
-import tempfile
 
 
 def elf_sections(data):
@@ -36,67 +35,24 @@ def elf_sections(data):
     return result
 
 
-def embedded_files(bundle):
-    if len(bundle) < 36:
-        raise ValueError('Missing FAP assets header')
-    magic, version, directories, files, signature_size = struct.unpack_from('<5I', bundle)
-    if (magic, version, signature_size) != (0x4F4C5A44, 1, 16):
-        raise ValueError('Unsupported FAP assets format')
-    cursor = 36
-    digest = hashlib.md5()
-
-    def take(size):
-        nonlocal cursor
-        if cursor + size > len(bundle):
-            raise ValueError('Truncated FAP assets')
-        value = bundle[cursor:cursor + size]
-        cursor += size
-        return value
-
-    def number():
-        return struct.unpack('<I', take(4))[0]
-
-    def path():
-        value = take(number())
-        if not value or value[-1:] != b'\0' or b'\0' in value[:-1]:
-            raise ValueError('Invalid FAP asset path')
-        digest.update(value)
-        return value[:-1].decode('ascii')
-
-    for _ in range(directories):
-        path()
-    result = {}
-    for _ in range(files):
-        name = path()
-        content = take(number())
-        digest.update(content)
-        if name in result:
-            raise ValueError('Duplicate FAP asset path')
-        result[name] = content
-    if cursor != len(bundle) or digest.digest() != bundle[20:36]:
-        raise ValueError('FAP assets integrity mismatch')
-    return result
-
-
-def check_imports(firmware, artifact, exports, profile):
-    nm = firmware / 'toolchain/current/bin/arm-none-eabi-nm'
+def check_imports(firmware, artifact, exports):
+    nm = Path(os.environ.get('FBT_TOOLCHAIN_PATH', str(firmware))) / 'toolchain/current/bin/arm-none-eabi-nm'
     output = subprocess.check_output([str(nm), '-P', '-u', str(artifact)], text=True)
     imports = {line.split()[0] for line in output.splitlines() if line.strip()}
     missing = imports - exports
     if missing:
         raise ValueError('Unresolved Momentum API imports: ' + ', '.join(sorted(missing)))
-    if profile == 'diagnostic':
-        allowed_listener = {'nfc_listener_' + suffix for suffix in
-                            ('alloc', 'free', 'start', 'stop', 'get_data', 'get_protocol', 'tx')}
-        patterns = ('poller_write', 'listener_write', 'recover_key', 'nested_attack',
-                    'mfkey32_recover', 'mfkey32v2', 'lfrfid_worker_write', 't5577_write',
-                    'em4305_write', 'slix_poller_set_password', 'mf_desfire_poller_create',
-                    'mf_classic_poller_auth', 'mf_ultralight_poller_auth')
-        forbidden = {name for name in imports if
-                     (name.startswith('nfc_listener_') and name not in allowed_listener) or
-                     any(part in name for part in patterns)}
-        if forbidden:
-            raise ValueError('Direct write/recovery API forbidden in diagnostics: ' + ', '.join(sorted(forbidden)))
+    allowed_listener = {'nfc_listener_' + suffix for suffix in
+                        ('alloc', 'free', 'start', 'stop', 'get_data', 'get_protocol', 'tx')}
+    patterns = ('poller_write', 'listener_write', 'recover_key', 'nested_attack',
+                'mfkey32_recover', 'mfkey32v2', 'lfrfid_worker_write', 't5577_write',
+                'em4305_write', 'slix_poller_set_password', 'mf_desfire_poller_create',
+                'mf_classic_poller_auth', 'mf_ultralight_poller_auth')
+    forbidden = {name for name in imports if
+                 (name.startswith('nfc_listener_') and name not in allowed_listener) or
+                 any(part in name for part in patterns)}
+    if forbidden:
+        raise ValueError('Direct write/recovery API forbidden in diagnostics: ' + ', '.join(sorted(forbidden)))
     return len(imports)
 
 
@@ -104,12 +60,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('firmware', type=Path)
     parser.add_argument('artifact', type=Path)
-    parser.add_argument('--profile', choices=('diagnostic', 'companion'), default='diagnostic')
     parser.add_argument('--icon', type=Path)
-    parser.add_argument('--require-embedded-plugin')
     args = parser.parse_args()
-    if args.profile == 'companion' and args.artifact.stem not in ('mfkey', 'nfc_magic', 'picopass'):
-        parser.error('Companion profile requires a named native companion')
     exports = set()
     api = None
     with (args.firmware / 'targets/f7/api_symbols.csv').open(newline='') as source:
@@ -127,23 +79,12 @@ def main():
         code = ('import sys; sys.path.insert(0, sys.argv[1]); '
                 'from flipper.assets.icon import file2image; '
                 'print(file2image(sys.argv[2]).data.hex())')
-        python = args.firmware / 'toolchain/current/bin/python3'
+        python = Path(os.environ.get('FBT_TOOLCHAIN_PATH', str(args.firmware))) / 'toolchain/current/bin/python3'
         encoded = bytes.fromhex(subprocess.check_output(
             [str(python), '-c', code, str(args.firmware / 'scripts'), str(args.icon)], text=True).strip())
         if not metadata[52] or len(encoded) > 32 or metadata[53:85] != encoded.ljust(32, b'\0'):
             raise ValueError('Embedded launcher icon differs from source asset')
-    count = check_imports(args.firmware, args.artifact, exports, args.profile)
-    if args.require_embedded_plugin:
-        files = embedded_files(sections.get('.fapassets', b''))
-        matches = [data for name, data in files.items() if Path(name).name == args.require_embedded_plugin]
-        if len(matches) != 1:
-            raise ValueError('Expected exactly one embedded ' + args.require_embedded_plugin)
-        with tempfile.TemporaryDirectory(prefix='diag-fal-') as directory:
-            plugin = Path(directory) / args.require_embedded_plugin
-            plugin.write_bytes(matches[0])
-            elf_sections(matches[0])
-            plugin_count = check_imports(args.firmware, plugin, exports, 'companion')
-        print(f'Embedded {args.require_embedded_plugin}: {plugin_count} enabled imports; assets integrity passed')
+    count = check_imports(args.firmware, args.artifact, exports)
     print(f'{args.artifact.name}: {count} enabled imports; API and launcher icon verified')
 
 

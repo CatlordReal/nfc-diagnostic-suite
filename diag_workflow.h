@@ -27,6 +27,16 @@ typedef enum {
     DiagWorkflowActionPicopass,
 } DiagWorkflowAction;
 
+typedef enum {
+    StepCardReady = 0,
+    StepReaderReady,
+    StepOutcome,
+    StepChooseFile,
+    StepSaved,
+    StepVerifyCopy,
+    StepReread,
+} DiagStep;
+
 typedef struct {
     bool started;
     bool have_card;
@@ -37,6 +47,11 @@ typedef struct {
 } DiagWorkflow;
 
 void diag_workflow_init(DiagWorkflow* workflow, bool have_card);
+
+/* Selects the next local step after a deferred native-tool return. The
+   pending action records intent only; this never treats the external action
+   as successful. */
+DiagStep diag_workflow_resume_step(const DiagWorkflow* workflow, uint32_t returned);
 
 DiagFileStatus diag_workflow_save(
     Storage* storage,

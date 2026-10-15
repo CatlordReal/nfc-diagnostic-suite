@@ -86,6 +86,25 @@ void diag_workflow_init(DiagWorkflow* workflow, bool have_card) {
     workflow->pending_action = DiagWorkflowActionNone;
 }
 
+DiagStep diag_workflow_resume_step(const DiagWorkflow* workflow, uint32_t returned) {
+    if(!workflow) return StepCardReady;
+    switch(returned) {
+    case DiagWorkflowActionReadNfc:
+    case DiagWorkflowActionReadLf:
+        return StepChooseFile;
+    case DiagWorkflowActionWriteNfc:
+    case DiagWorkflowActionWriteLf:
+        return StepVerifyCopy;
+    case DiagWorkflowActionMfkey:
+        return StepReread;
+    case DiagWorkflowActionPicopass:
+        return workflow->have_card ? StepChooseFile : StepReaderReady;
+    default:
+        if(workflow->source_path[0]) return StepOutcome;
+        return workflow->have_card ? StepCardReady : StepReaderReady;
+    }
+}
+
 #ifdef DIAG_WORKFLOW_TESTING
 bool diag_workflow_test_validate(const DiagWorkflow* workflow) {
     return diag_workflow_valid(workflow);
@@ -145,10 +164,9 @@ DiagFileStatus diag_workflow_save(
     const DiagWorkflow* workflow,
     FuriString* explanation) {
     if(!storage || !diag_workflow_valid(workflow)) return DiagFileStatusInvalidArgument;
-    if(!storage_simply_mkdir(storage, DIAG_WORKFLOW_DIRECTORY)) {
-        diag_workflow_explain(explanation, DiagFileStatusIo);
-        return DiagFileStatusIo;
-    }
+    DiagFileStatus directory_status =
+        diag_files_ensure_directory(storage, DIAG_WORKFLOW_DIRECTORY, explanation);
+    if(directory_status != DiagFileStatusOk) return directory_status;
     /* A synced temporary file replaces state only after the old state moves to backup.
        Load also accepts that backup after an interrupted replacement. */
     FlipperFormat* file = flipper_format_file_alloc(storage);

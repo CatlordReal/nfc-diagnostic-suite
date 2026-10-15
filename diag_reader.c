@@ -971,4 +971,13 @@ void diag_reader_snapshot(DiagReader* instance, DiagModel* model, DiagReaderStat
     if(stats) stats->events_dropped = __atomic_load_n(&instance->queue_dropped, __ATOMIC_RELAXED);
     furi_mutex_release(instance->mutex);
 }
+
+bool diag_reader_read_model(
+    DiagReader* instance, DiagModelReadCallback callback, void* context) {
+    if(!instance || !callback) return false;
+    furi_mutex_acquire(instance->mutex, FuriWaitForever);
+    callback(&instance->core.model, context);
+    furi_mutex_release(instance->mutex);
+    return true;
+}
 #endif

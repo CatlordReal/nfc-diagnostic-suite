@@ -37,6 +37,8 @@ bool diag_lf_start(DiagLf* instance, DiagLfMode mode);
 void diag_lf_cancel(DiagLf* instance);
 bool diag_lf_is_running(DiagLf* instance);
 void diag_lf_snapshot(DiagLf* instance, DiagModel* model, DiagLfStats* stats);
+bool diag_lf_read_model(
+    DiagLf* instance, DiagModelReadCallback callback, void* context);
 
 #define DIAG_LF_TIMEOUT_MS 25000u
 #define DIAG_LF_FIELD_SAMPLE_MS 100u

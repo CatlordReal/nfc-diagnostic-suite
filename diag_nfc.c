@@ -15,6 +15,22 @@ typedef enum {
     DiagAppErrorUnsupportedUid,
 } DiagAppError;
 
+/* The native SDK uses one-byte protocol enums. Copy the bounded scanner result
+   into an application-owned bit mask before its callback returns. */
+static bool diag_nfc_scanner_candidates(
+    const uint8_t* protocols, size_t count, uint32_t* candidates) {
+    if(!candidates) return false;
+    *candidates = 0;
+    if(!protocols || count == 0 || count > DIAG_NFC_PROTOCOL_COUNT) return false;
+    uint32_t result = 0;
+    for(size_t index = 0; index < count; ++index) {
+        if(protocols[index] >= DIAG_NFC_PROTOCOL_COUNT) return false;
+        result |= DIAG_BIT(protocols[index]);
+    }
+    *candidates = result;
+    return true;
+}
+
 static bool diag_nfc_evidence_uid_same(
     const DiagIdentity* selected, const uint8_t* uid, size_t size) {
     return selected && selected->present && uid && size > 0 &&
@@ -90,6 +106,11 @@ static void diag_nfc_evidence_failure(DiagModel* model, const char* domain, int3
 }
 
 #ifdef DIAG_NFC_TESTING
+bool diag_nfc_test_scanner_candidates(
+    const uint8_t* protocols, size_t count, uint32_t* candidates) {
+    return diag_nfc_scanner_candidates(protocols, count, candidates);
+}
+
 bool diag_nfc_test_identity_a(
     DiagModel* model, const uint8_t* uid, size_t size, const uint8_t atqa[2], uint8_t sak) {
     return diag_nfc_evidence_identity_a(model, uid, size, atqa, sak);
@@ -157,6 +178,7 @@ void diag_nfc_test_finish_failure(DiagModel* model, bool cancelled, bool discove
 
 _Static_assert(Iso14443_3aErrorWrongCrc == 6, "Update Classic evidence for this SDK");
 _Static_assert(NfcProtocolNum == DIAG_NFC_PROTOCOL_COUNT, "Update protocol coverage for this SDK");
+_Static_assert(sizeof(NfcProtocol) == sizeof(uint8_t), "Update scanner enum decoding for this SDK ABI");
 _Static_assert((int)NfcProtocolIso14443_3a == (int)DiagProtocolIso14443_3a &&
                (int)NfcProtocolIso14443_3b == (int)DiagProtocolIso14443_3b &&
                (int)NfcProtocolIso14443_4a == (int)DiagProtocolIso14443_4a &&
@@ -468,24 +490,12 @@ static void diag_nfc_scanner_callback(NfcScannerEvent event, void* context) {
     DiagNfc* instance = context;
     if(event.type != NfcScannerEventTypeDetected || diag_nfc_cancelled(instance)) return;
     uint32_t candidates = 0;
-    bool invalid = event.data.protocol_num == 0 || event.data.protocol_num > NfcProtocolNum ||
-                   !event.data.protocols;
-    if(!invalid) {
-        for(size_t i = 0; i < event.data.protocol_num; ++i) {
-            NfcProtocol protocol = event.data.protocols[i];
-            if(protocol >= NfcProtocolNum) {
-                invalid = true;
-                break;
-            }
-            candidates |= DIAG_BIT(protocol);
-        }
-    }
+    bool invalid = !diag_nfc_scanner_candidates(
+        (const uint8_t*)event.data.protocols, event.data.protocol_num, &candidates);
     furi_mutex_acquire(instance->mutex, FuriWaitForever);
     instance->scanner_count = event.data.protocol_num;
     instance->scanner_invalid = invalid;
-    /* API 87.1 copies count bytes rather than count*sizeof(NfcProtocol) during filtering.
-       A multi-entry event must therefore never become protocol evidence. */
-    instance->scanner_candidates = (!invalid && event.data.protocol_num == 1) ? candidates : 0;
+    instance->scanner_candidates = candidates;
     furi_mutex_release(instance->mutex);
     furi_event_flag_set(instance->events, DIAG_FLAG_DONE);
 }
@@ -1038,12 +1048,12 @@ static int32_t diag_nfc_worker(void* context) {
         }
     }
     furi_mutex_release(instance->mutex);
-    if(instance->scanner_invalid || instance->scanner_count != 1) {
+    if(instance->scanner_invalid) {
         diag_nfc_log(instance, DiagLogWarning, DiagStageTechnologyDetected,
-                     "Scanner multi/invalid list discarded (API87.1 filter defect); independent probes follow");
+                     "Invalid scanner list rejected; independent identity probes follow");
     } else {
         diag_nfc_log(instance, DiagLogSuccess, DiagStageTechnologyDetected,
-                     "Scanner candidate copied; confirmation requires independent command response");
+                     "Scanner candidates copied; confirmation requires independent command response");
     }
 
     static const NfcProtocol base_protocols[] = {
@@ -1210,5 +1220,14 @@ void diag_nfc_snapshot(DiagNfc* instance, DiagModel* destination) {
     furi_mutex_acquire(instance->mutex, FuriWaitForever);
     *destination = instance->model;
     furi_mutex_release(instance->mutex);
+}
+
+bool diag_nfc_read_model(
+    DiagNfc* instance, DiagModelReadCallback callback, void* context) {
+    if(!instance || !callback) return false;
+    furi_mutex_acquire(instance->mutex, FuriWaitForever);
+    callback(&instance->model, context);
+    furi_mutex_release(instance->mutex);
+    return true;
 }
 #endif /* DIAG_NFC_TESTING */

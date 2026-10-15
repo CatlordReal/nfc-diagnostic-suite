@@ -497,6 +497,114 @@ static void test_heap_guard_math(void) {
     assert(!diag_files_test_heap_sufficient(SIZE_MAX, SIZE_MAX, requested, SIZE_MAX));
 }
 
+enum {
+    TestFsOk = 0,
+    TestFsExist = 2,
+    TestFsNotExist = 3,
+    TestFsDenied = 5,
+    TestFsInvalidName = 6,
+};
+
+typedef struct {
+    char mkdir_paths[4][DIAG_FILES_PATH_CAPACITY];
+    int32_t mkdir_results[4];
+    size_t mkdir_count;
+    size_t mkdir_result_count;
+    bool existing_is_directory;
+    bool root_stat_invalid;
+    size_t stat_count;
+} TestDirectoryStorage;
+
+static int32_t test_directory_mkdir(void* context, const char* path) {
+    TestDirectoryStorage* storage = context;
+    assert(storage->mkdir_count < 4u);
+    snprintf(
+        storage->mkdir_paths[storage->mkdir_count],
+        sizeof(storage->mkdir_paths[storage->mkdir_count]),
+        "%s",
+        path);
+    const size_t index = storage->mkdir_count++;
+    return index < storage->mkdir_result_count ? storage->mkdir_results[index] : TestFsOk;
+}
+
+static int32_t test_directory_stat(void* context, const char* path, bool* is_directory) {
+    TestDirectoryStorage* storage = context;
+    assert(path && *path);
+    ++storage->stat_count;
+    if(storage->root_stat_invalid && !strcmp(path, "/ext")) return TestFsInvalidName;
+    *is_directory = storage->existing_is_directory;
+    return TestFsOk;
+}
+
+static void test_recursive_export_directory(void) {
+    TestDirectoryStorage storage = {
+        .mkdir_results = {TestFsOk, TestFsOk},
+        .mkdir_result_count = 2u,
+        .existing_is_directory = true,
+        .root_stat_invalid = true,
+    };
+    char failed_path[DIAG_FILES_PATH_CAPACITY];
+    assert(diag_files_test_ensure_directory(
+               "/ext/apps_data/nfc_diagnostic_suite/",
+               test_directory_mkdir,
+               test_directory_stat,
+               &storage,
+               TestFsOk,
+               TestFsExist,
+               TestFsInvalidName,
+               failed_path,
+               sizeof(failed_path)) == TestFsOk);
+    assert(storage.mkdir_count == 2u);
+    assert(storage.stat_count == 0u);
+    assert(!strcmp(storage.mkdir_paths[0], "/ext/apps_data"));
+    assert(!strcmp(storage.mkdir_paths[1], "/ext/apps_data/nfc_diagnostic_suite"));
+    assert(!failed_path[0]);
+
+    memset(&storage, 0, sizeof(storage));
+    storage.mkdir_results[0] = TestFsExist;
+    storage.mkdir_result_count = 1u;
+    storage.existing_is_directory = false;
+    assert(diag_files_test_ensure_directory(
+               "/ext/apps_data",
+               test_directory_mkdir,
+               test_directory_stat,
+               &storage,
+               TestFsOk,
+               TestFsExist,
+               TestFsInvalidName,
+               failed_path,
+               sizeof(failed_path)) == TestFsInvalidName);
+    assert(!strcmp(failed_path, "/ext/apps_data"));
+
+    memset(&storage, 0, sizeof(storage));
+    storage.mkdir_results[0] = TestFsDenied;
+    storage.mkdir_result_count = 1u;
+    assert(diag_files_test_ensure_directory(
+               "/ext/apps_data/nfc_diagnostic_suite",
+               test_directory_mkdir,
+               test_directory_stat,
+               &storage,
+               TestFsOk,
+               TestFsExist,
+               TestFsInvalidName,
+               failed_path,
+               sizeof(failed_path)) == TestFsDenied);
+    assert(storage.mkdir_count == 1u);
+    assert(!strcmp(failed_path, "/ext/apps_data"));
+
+    memset(&storage, 0, sizeof(storage));
+    assert(diag_files_test_ensure_directory(
+               "/ext//nfc_diagnostic_suite",
+               test_directory_mkdir,
+               test_directory_stat,
+               &storage,
+               TestFsOk,
+               TestFsExist,
+               TestFsInvalidName,
+               failed_path,
+               sizeof(failed_path)) == TestFsInvalidName);
+}
+
 int main(void) {
     test_valid_ultralight();
     test_valid_iso15693();
@@ -508,6 +616,7 @@ int main(void) {
     test_v1_session_compatibility();
     test_session_invalid_fields();
     test_heap_guard_math();
+    test_recursive_export_directory();
     puts("diag_files tests passed");
     return 0;
 }

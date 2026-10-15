@@ -54,6 +54,12 @@ typedef struct {
 
 const char* diag_file_status_string(DiagFileStatus status);
 
+/* Creates each child below the VFS mount and verifies existing entries are directories. */
+DiagFileStatus diag_files_ensure_directory(
+    Storage* storage,
+    const char* directory,
+    FuriString* explanation);
+
 /* Preflight runs before Momentum's semantic loader. Loaded files are saved evidence only. */
 DiagFileStatus diag_files_validate_nfc(
     Storage* storage,
@@ -104,6 +110,9 @@ DiagFileStatus diag_files_export_reports(
     FuriString* explanation);
 
 #ifdef DIAG_FILES_TESTING
+typedef int32_t (*DiagFilesTestMkdir)(void* context, const char* path);
+typedef int32_t (*DiagFilesTestStatDir)(void* context, const char* path, bool* is_directory);
+
 DiagFileStatus diag_files_test_preflight_nfc(
     const uint8_t* data,
     size_t size,
@@ -128,6 +137,16 @@ bool diag_files_test_heap_sufficient(
     size_t max_free_block,
     size_t requested_total,
     size_t largest_allocation);
+int32_t diag_files_test_ensure_directory(
+    const char* directory,
+    DiagFilesTestMkdir mkdir_operation,
+    DiagFilesTestStatDir stat_operation,
+    void* context,
+    int32_t ok_code,
+    int32_t exists_code,
+    int32_t invalid_code,
+    char* failed_path,
+    size_t failed_path_capacity);
 #endif
 
 #ifdef __cplusplus

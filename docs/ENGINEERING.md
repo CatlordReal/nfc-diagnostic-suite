@@ -2,15 +2,15 @@
 
 ## Firmware and distribution boundary
 
-This standalone application uses the actual [Momentum source at the default pin](https://github.com/Next-Flip/Momentum-Firmware/tree/d3f89dfe2ef6b01839201598e9be1590cba80322), API 87.1. It does not patch or flash the firmware. `dist/BUILD.txt` records the actual source revision and artifact SHA-256. A source override requires a matching installed firmware; the device's installed revision has not been established.
+This standalone application targets the installed Momentum tag [`mntm-012`](https://github.com/Next-Flip/Momentum-Firmware/tree/e1784e7418d8b074e971983ceb6fef0f37e52ae4), commit `e1784e7418d8b074e971983ceb6fef0f37e52ae4`, API 87.1. Earlier development used commit `d3f89dfe2ef6b01839201598e9be1590cba80322`; required exports and relevant native/public interfaces were verified against `mntm-012`. The app does not patch or flash firmware. `dist/BUILD.txt` records the actual source revision and artifact SHA-256. A source override requires matching installed firmware.
 
-The build includes three separate, unmodified native Momentum apps: **MFKey**, **NFC Magic**, and **HID iClass (PicoPass)**. Their algorithms remain in those companions; the diagnostic app launches the appropriate native tool. The distribution retains their source icons, manifests, upstream descriptions, Momentum license and PicoPass component notices. `dist/vendor/SOURCE.txt` links the exact corresponding source revision. `scripts/setup-momentum.sh` fetches the pinned source and submodules; the full firmware checkout is not copied into the ZIP.
+The release distributes only `nfc_diagnostic_suite.fap` and an optional installer ZIP containing that FAP, README, license, icon and build record. Source and tests remain in the GitHub repository. It does not redistribute firmware or other Momentum apps. Guided actions can hand off to compatible tools installed separately; availability is checked at runtime and launching a tool does not prove completion. `scripts/setup-momentum.sh` fetches the pinned firmware source and submodules for building; the checkout is not copied into the ZIP.
 
-Every FAP import must be enabled in that checkout's `targets/f7/api_symbols.csv`. The diagnostics profile additionally forbids direct write and key-recovery imports, while allowing its bounded diagnostic listener APIs. Companion profiles allow native tool operations but still validate every import. FAP API metadata and each embedded launcher icon are checked. MFKey's asset bundle signature, embedded `mfkey_init_plugin.fal` and its imports are checked separately.
+Every suite FAP import must be enabled in that checkout's `targets/f7/api_symbols.csv`. The import gate forbids direct write and key-recovery imports while allowing bounded diagnostic listener APIs. FAP API metadata and the embedded launcher icon are checked.
 
 ## NFC card evidence
 
-Momentum's NFC scanner supports 15 protocols. Its multiple-result filter copies the wrong byte count at this pin (`lib/nfc/nfc_scanner.c`); the app discards multi-entry lists and uses independent identity probes. A scanner candidate is not a command-confirmed family. Scanner callbacks do not expose private selection or anticollision stages, and the app does not invent them.
+Momentum's NFC scanner supports 15 protocols. Scanner results remain candidates; the app uses independent direct probes to obtain command-confirmed family evidence where supported. The scanner's byte-count copy is correct for its byte-sized result entries and is not treated as a defect. Scanner callbacks do not expose private selection or anticollision stages, and the app does not invent them.
 
 | Protocol or family | Observable evidence | Limits |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Momentum's NFC scanner supports 15 protocols. Its multiple-result filter copies 
 
 A stable selected UID is checked before applying a later family result. ISO A four-byte `08xxxxxx` identifiers and ISO B PUPIs can change: the primary observed identity is retained, reduced correlation is explicit, and a version manufacturing UID does not replace it. A direct response proves behaviour during that activation, not chip authenticity or continuity across random identifiers.
 
-PicoPass is absent from this 15-protocol scanner table. The separately bundled native app is an explicit compatibility tool, with its own supported identification/read/actions; launching it does not claim that this app scanned or confirmed PicoPass.
+PicoPass is absent from this 15-protocol scanner table. An optional handoff can open a separately installed compatible tool; launching it does not claim that this app scanned or confirmed PicoPass.
 
 ## 125 kHz RFID and reader diagnostics
 
@@ -46,9 +46,9 @@ NFC reader modes are bounded to 30 seconds:
 
 Classic pairing requires the same CUID, sector and key type, with distinct complete Nt/Nr/Ar triples. Shared components, including a static card nonce, remain valid native MFKey inputs; identical full replays and duplicate pairs are rejected. Distinct exchanges do not prove statistical independence or recovery success. A four-byte card nonce alone is insufficient. At most 16 pending samples and eight pairs are retained. Callback events use a bounded queue of 32 entries; dropped events are counted. Callbacks perform no storage operations.
 
-After the listener stops and releases the radio, the worker scans and appends standard native `Sec ... key ... cuid ... nt0 ... nr0 ... ar0 ... nt1 ... nr1 ... ar1 ...` records to `/ext/nfc/.mfkey32.log`. One exclusive append handle covers deduplication and publication. Existing bytes are never truncated or rewritten; an I/O failure may leave an incomplete new tail, which is reported. Log scans and each dictionary scan are capped at 1 MiB; oversized lines are skipped safely, incomplete counts are labelled, and keys are not displayed. MFKey handles any recovery through its native app and dictionary workflow; success is not promised.
+After the listener stops and releases the radio, the worker scans and appends standard native `Sec ... key ... cuid ... nt0 ... nr0 ... ar0 ... nt1 ... nr1 ... ar1 ...` records to `/ext/nfc/.mfkey32.log`. One exclusive append handle covers deduplication and publication. Existing bytes are never truncated or rewritten; an I/O failure may leave an incomplete new tail, which is reported. Log scans and each dictionary scan are capped at 1 MiB; oversized lines are skipped safely, incomplete counts are labelled, and keys are not displayed. A separately installed compatible recovery tool may consume the native log format; success is not promised.
 
-NFC Magic supports its native list of rewritable targets, including supported Classic Gen1/Gen2 and Ultimate Magic Gen4 modes. It is not a universal NTAG, DESFire, NFC-V or modern-credential writer. Native NFC and LF apps enforce their own data, key and target requirements. Actions shown by the guide are routing capabilities, not proof that a write will succeed.
+A separately installed compatible writer may support specific rewritable targets, including some Classic Gen1/Gen2 and Ultimate Magic Gen4 modes. It is not a universal NTAG, DESFire, NFC-V or modern-credential writer. Native NFC and LF tools enforce their own data, key and target requirements. Actions shown by the guide are routing capabilities, not proof that a write will succeed.
 
 ## Ownership, cancellation and storage
 

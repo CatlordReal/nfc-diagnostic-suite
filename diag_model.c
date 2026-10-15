@@ -575,10 +575,11 @@ bool diag_model_observe(const DiagModel* model, DiagObservation* observation) {
     return true;
 }
 
-static DiagComparison observation_compare(
+DiagComparison diag_observation_compare(
     const DiagObservation* left,
     const DiagObservation* right) {
     DiagComparison result = {0};
+    if(!left || !right) return result;
     const bool identity_observed = (left->identity.present || left->iso_a.present) &&
                                    (right->identity.present || right->iso_a.present);
     result.identity_same = identity_observed &&
@@ -634,7 +635,7 @@ bool diag_observations_analyze(
         }
         if(index > 0u) {
             const DiagComparison comparison =
-                observation_compare(&observations[0], observation);
+                diag_observation_compare(&observations[0], observation);
             result->identity_repeatable &= comparison.identity_same;
             result->protocols_repeatable &= comparison.protocols_same;
             result->metadata_repeatable &= comparison.metadata_same;
@@ -900,6 +901,7 @@ bool diag_model_export_csv(const DiagModel* model, DiagWriter writer, void* cont
     return true;
 }
 
+#ifdef DIAG_MODEL_TESTING
 bool diag_model_load_simulation(
     DiagModel* model,
     DiagSimulationCase simulation,
@@ -985,3 +987,4 @@ done:
     free(model);
     return passed;
 }
+#endif

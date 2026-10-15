@@ -6,7 +6,7 @@ build_dir=$(mktemp -d "${TMPDIR:-/tmp}/nfc-diag-model.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
 compiler=${CC:-cc}
-common_flags="-std=c11 -Wall -Wextra -Werror -pedantic"
+common_flags="-std=c11 -Wall -Wextra -Werror -pedantic -DDIAG_MODEL_TESTING"
 
 "$compiler" $common_flags "$repo_dir/diag_model.c" "$repo_dir/tests/test_model.c" \
     -o "$build_dir/test_model"

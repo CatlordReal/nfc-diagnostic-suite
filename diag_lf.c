@@ -547,4 +547,13 @@ void diag_lf_snapshot(DiagLf* instance, DiagModel* model, DiagLfStats* stats) {
     furi_mutex_release(instance->mutex);
 }
 
+bool diag_lf_read_model(
+    DiagLf* instance, DiagModelReadCallback callback, void* context) {
+    if(!instance || !callback) return false;
+    furi_mutex_acquire(instance->mutex, FuriWaitForever);
+    callback(&instance->model, context);
+    furi_mutex_release(instance->mutex);
+    return true;
+}
+
 #endif

@@ -62,6 +62,8 @@ void diag_reader_cancel(DiagReader* instance);
 bool diag_reader_is_running(DiagReader* instance);
 void diag_reader_snapshot(
     DiagReader* instance, DiagModel* model, DiagReaderStats* stats);
+bool diag_reader_read_model(
+    DiagReader* instance, DiagModelReadCallback callback, void* context);
 
 const char* diag_reader_mode_name(DiagReaderMode mode);
 
