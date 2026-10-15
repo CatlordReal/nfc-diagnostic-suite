@@ -1,0 +1,4 @@
+Launcher icon: 10x10 pixels, monochrome PNG.
+Momentum native build and API import validation passed.
+FAP .fapmeta has_icon=true; all 32 icon bytes match Momentum conversion of source PNG (including padding).
+Source asset is included in rebuilt ZIP. Preview is enlarged icon artwork, not a physical-device capture.

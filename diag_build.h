@@ -1,0 +1,2 @@
+#pragma once
+#define DIAG_FIRMWARE_BUILD "d3f89dfe2ef6b01839201598e9be1590cba80322"

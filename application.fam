@@ -1,0 +1,15 @@
+App(
+    appid="nfc_diagnostic_suite",
+    name="NFC Diagnostic Suite",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="nfc_diagnostic_suite_app",
+    stack_size=4096,
+    requires=["gui", "dialogs", "storage", "nfc"],
+    fap_category="NFC",
+    fap_icon="nfc_diagnostic_icon.png",
+    fap_version="2.0",
+    fap_author="Kian Conti",
+    fap_description="NFC and LF RFID diagnostics with guided native tools",
+    cflags=["-fstack-usage", "-Wstack-usage=1536"],
+    sources=["app.c", "diag_model.c", "diag_nfc.c", "diag_files.c", "diag_ui.c", "diag_lf.c", "diag_reader.c", "diag_workflow.c", "diag_capabilities.c"],
+)

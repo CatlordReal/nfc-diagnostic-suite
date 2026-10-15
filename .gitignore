@@ -1,0 +1,13 @@
+.momentum/
+.build/
+.venv/
+.backups/
+__pycache__/
+*.pyc
+.DS_Store
+.*.log
+.host-tests.log
+.build-*.log
+dist/*.zip
+dist/nfc_diagnostic_suite.fap
+dist/apps/
