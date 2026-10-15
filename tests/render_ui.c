@@ -20,7 +20,7 @@ static void capture(Canvas* canvas, DiagUi* ui, const char* directory, const cha
     char path[512];snprintf(path,sizeof(path),"%s/%s.pbm",directory,name);
     FILE* file=fopen(path,"wb");assert(file);
     fputs("P1\n128 64\n",file);
-    for(int y=0;y<64;y++) {for(int x=0;x<128;x++) fprintf(file,"%u ",(canvas->tile_buf_ptr[(y/8)*128+x]>>(y%8))&1);fputc('\n',file);}
+    for(int y=0;y<64;y++) {for(int x=0;x<128;x++) fprintf(file,"%u%s",(canvas->tile_buf_ptr[(y/8)*128+x]>>(y%8))&1,x==127?"":" ");fputc('\n',file);}
     assert(!fclose(file));
 }
 int main(int argc,char**argv) {
